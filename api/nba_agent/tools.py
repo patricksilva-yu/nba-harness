@@ -1,0 +1,1508 @@
+#!/usr/bin/env python3
+"""Tool-like JSON functions for the NBA analyst cache and evidence layer."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import uuid
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+
+import duckdb
+
+from api.nba_agent.db import DEFAULT_DB, connect
+from api.nba_agent.official_ingest import (
+    fetch_recent_completed_games,
+    import_official_game_bundle,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+GAME_RESOLUTION_SEASON_TYPES = ("Playoffs", "Regular Season")
+
+
+def packet_id(*parts: object) -> str:
+    return "_".join(str(part).replace(":", "").replace(" ", "-").lower() for part in parts)
+
+
+def persist_evidence_packets(
+    game_id: str,
+    packets: list[dict[str, Any]],
+    db_path: Path = DEFAULT_DB,
+) -> bool:
+    if not packets:
+        return True
+    try:
+        con = connect(db_path, read_only=False)
+        con.executemany(
+            """
+            INSERT OR REPLACE INTO evidence_packets (
+                packet_id, game_id, packet_type, claim_seed, source_provider,
+                source_detail, evidence_level, confidence, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                [
+                    packet["packet_id"],
+                    game_id,
+                    packet.get("type"),
+                    packet.get("claim_seed"),
+                    packet.get("source", {}).get("provider"),
+                    packet.get("source", {}).get("detail") or packet.get("source", {}).get("endpoint"),
+                    packet.get("evidence_level"),
+                    packet.get("confidence"),
+                    json.dumps(packet, default=str),
+                ]
+                for packet in packets
+            ],
+        )
+        con.close()
+        return True
+    except duckdb.IOException:
+        return False
+
+
+def with_persisted_packets(
+    game_id: str,
+    response: dict[str, Any],
+    db_path: Path = DEFAULT_DB,
+    persist: bool = True,
+) -> dict[str, Any]:
+    if persist:
+        persist_evidence_packets(game_id, response.get("evidence_packets", []), db_path)
+    return response
+
+
+def find_recent_completed_games(
+    season: str | None = None,
+    season_type: str = "Playoffs",
+    limit: int = 10,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    games = fetch_recent_completed_games(
+        season=season,
+        season_type=season_type,
+        limit=limit,
+        timeout=timeout,
+        db_path=DEFAULT_DB,
+    )
+    return {
+        "summary": {
+            "resolution_status": "available",
+            "season": season,
+            "season_type": season_type,
+            "count": len(games),
+            "source": "nba_api:LeagueGameLog",
+        },
+        "games": games,
+        "warnings": [],
+    }
+
+
+def resolution_season_type_order(season_type: str | None) -> list[str]:
+    if not season_type or season_type.lower() == "auto":
+        return list(GAME_RESOLUTION_SEASON_TYPES)
+    requested = season_type
+    ordered = [requested]
+    ordered.extend(item for item in GAME_RESOLUTION_SEASON_TYPES if item != requested)
+    return ordered
+
+
+def find_recent_completed_games_for_resolution(
+    season: str | None = None,
+    season_type: str | None = "Auto",
+    limit: int = 20,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    games_by_id: dict[str, dict[str, Any]] = {}
+    source_status: list[dict[str, Any]] = []
+    for type_to_search in resolution_season_type_order(season_type):
+        try:
+            response = find_recent_completed_games(
+                season=season,
+                season_type=type_to_search,
+                limit=limit,
+                timeout=timeout,
+            )
+            games = response.get("games", [])
+            source_status.append(
+                {
+                    "season_type": type_to_search,
+                    "status": "ok",
+                    "count": len(games),
+                }
+            )
+            for game in games:
+                games_by_id.setdefault(game["game_id"], game)
+        except Exception as exc:
+            source_status.append(
+                {
+                    "season_type": type_to_search,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+    games = sorted(games_by_id.values(), key=lambda item: (item["game_date"], item["game_id"]), reverse=True)
+    return {
+        "summary": {
+            "resolution_status": "available",
+            "requested_season_type": season_type,
+            "searched_season_types": [item["season_type"] for item in source_status],
+            "count": len(games),
+            "source": "nba_api:LeagueGameLog",
+        },
+        "games": games[:limit],
+        "source_status": source_status,
+        "warnings": [
+            f"Could not search {item['season_type']}: {item['error']}"
+            for item in source_status
+            if item["status"] == "error"
+        ],
+    }
+
+
+TEAM_ALIASES = {
+    "atl": {"atl", "hawks", "atlanta"},
+    "bos": {"bos", "celtics", "boston"},
+    "bkn": {"bkn", "nets", "brooklyn"},
+    "cha": {"cha", "hornets", "charlotte"},
+    "chi": {"chi", "bulls", "chicago"},
+    "cle": {"cle", "cavs", "cavaliers", "cleveland"},
+    "dal": {"dal", "mavs", "mavericks", "dallas"},
+    "den": {"den", "nuggets", "denver"},
+    "det": {"det", "pistons", "detroit"},
+    "gsw": {"gsw", "warriors", "golden state"},
+    "hou": {"hou", "rockets", "houston"},
+    "ind": {"ind", "pacers", "indiana"},
+    "lac": {"lac", "clippers", "la clippers"},
+    "lal": {"lal", "lakers", "la lakers"},
+    "mem": {"mem", "grizzlies", "memphis"},
+    "mia": {"mia", "heat", "miami"},
+    "mil": {"mil", "bucks", "milwaukee"},
+    "min": {"min", "wolves", "timberwolves", "minnesota"},
+    "nop": {"nop", "pelicans", "new orleans"},
+    "nyk": {"nyk", "knicks", "new york"},
+    "okc": {"okc", "thunder", "oklahoma city"},
+    "orl": {"orl", "magic", "orlando"},
+    "phi": {"phi", "sixers", "76ers", "philadelphia"},
+    "phx": {"phx", "suns", "phoenix"},
+    "por": {"por", "blazers", "trail blazers", "portland"},
+    "sac": {"sac", "kings", "sacramento"},
+    "sas": {"sas", "spurs", "san antonio"},
+    "tor": {"tor", "raptors", "toronto"},
+    "uta": {"uta", "jazz", "utah"},
+    "was": {"was", "wizards", "washington"},
+}
+
+
+def matching_team_abbrs(query: str) -> set[str]:
+    normalized = query.lower()
+    matches: set[str] = set()
+    for abbr, aliases in TEAM_ALIASES.items():
+        for alias in aliases:
+            if alias in normalized:
+                matches.add(abbr.upper())
+                break
+    return matches
+
+
+def requested_game_date(query: str, today: date | None = None) -> str | None:
+    text = query.lower()
+    explicit = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if explicit:
+        return explicit.group(1)
+    today = today or date.today()
+    if "last night" in text or "yesterday" in text:
+        return str(today - timedelta(days=1))
+    return None
+
+
+def requested_playoff_game_number(query: str) -> int | None:
+    match = re.search(r"\bgame\s+([1-7])\b", query.lower())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def same_matchup(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return {a["home_team_abbr"], a["away_team_abbr"]} == {b["home_team_abbr"], b["away_team_abbr"]}
+
+
+def resolve_game_reference(
+    query: str,
+    season: str | None = None,
+    season_type: str = "Auto",
+    limit: int = 20,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    # Resolution needs a deeper source window than the display limit. Otherwise
+    # an older playoff game can be missed after later rounds add more games.
+    source_limit = max(limit, 120)
+    recent = find_recent_completed_games_for_resolution(
+        season=season,
+        season_type=season_type,
+        limit=source_limit,
+        timeout=timeout,
+    )
+    games = recent.get("games", [])
+    matched_teams = matching_team_abbrs(query)
+    requested_date = requested_game_date(query)
+    requested_game_number = requested_playoff_game_number(query)
+    preference = "exact_date_match" if requested_date else "disambiguate_repeated_matchups"
+
+    candidates = []
+    for game in games:
+        teams = {game["home_team_abbr"], game["away_team_abbr"]}
+        score = len(matched_teams & teams)
+        if not matched_teams:
+            score = 1
+        if len(matched_teams) >= 2 and score < len(matched_teams):
+            continue
+        if score > 0:
+            candidates.append({**game, "match_score": score})
+
+    if requested_date:
+        candidates = [candidate for candidate in candidates if str(candidate["game_date"])[:10] == requested_date]
+
+    if requested_game_number and matched_teams:
+        playoff_candidates = [
+            candidate
+            for candidate in candidates
+            if str(candidate.get("season_type", "")).lower() == "playoffs"
+        ]
+        series_candidates = sorted(
+            [
+                candidate
+                for candidate in playoff_candidates
+                if matched_teams.issubset({candidate["home_team_abbr"], candidate["away_team_abbr"]})
+            ],
+            key=lambda game: (game["game_date"], game["game_id"]),
+        )
+        if len(series_candidates) >= requested_game_number:
+            candidates = [
+                {**candidate, "series_game_number": index + 1}
+                for index, candidate in enumerate(series_candidates)
+                if index + 1 == requested_game_number
+            ]
+            preference = "playoff_series_game_match"
+        elif series_candidates:
+            candidates = [
+                {**candidate, "series_game_number": index + 1}
+                for index, candidate in enumerate(series_candidates)
+            ]
+
+    if not candidates:
+        return {
+            "summary": {
+                "resolution_status": "not_found",
+                "query": query,
+                "matched_teams": sorted(matched_teams),
+                "requested_date": requested_date,
+                "requested_game_number": requested_game_number,
+                "requested_season_type": season_type,
+                "searched_season_types": recent.get("summary", {}).get("searched_season_types", []),
+            },
+            "recent_games": games,
+            "source_status": recent.get("source_status", []),
+            "warnings": recent.get("warnings", []) + ["No recent completed game matched the query."],
+        }
+
+    candidates = sorted(candidates, key=lambda game: (game["match_score"], game["game_date"], game["game_id"]), reverse=True)
+    selected = candidates[0]
+    def compact_game(game: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "game_id": game["game_id"],
+            "game_date": game["game_date"],
+            "label": game["label"],
+            "home_team_abbr": game["home_team_abbr"],
+            "away_team_abbr": game["away_team_abbr"],
+            "home_score": game["home_score"],
+            "away_score": game["away_score"],
+            "match_score": game.get("match_score"),
+            "series_game_number": game.get("series_game_number"),
+        }
+
+    same_score_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.get("match_score") == selected.get("match_score")
+    ]
+    repeated_matchup_candidates = [
+        candidate
+        for candidate in same_score_candidates
+        if same_matchup(candidate, selected)
+    ]
+    if not requested_date and matched_teams and len(repeated_matchup_candidates) > 1:
+        return {
+            "summary": {
+                "resolution_status": "ambiguous",
+                "query": query,
+                "matched_teams": sorted(matched_teams),
+                "requested_date": requested_date,
+                "requested_game_number": requested_game_number,
+                "requested_season_type": season_type,
+                "searched_season_types": recent.get("summary", {}).get("searched_season_types", []),
+                "confidence": "low",
+            },
+            "candidates": [compact_game(candidate) for candidate in repeated_matchup_candidates[:5]],
+            "source_status": recent.get("source_status", []),
+            "warnings": recent.get("warnings", []) + [
+                "Multiple completed games matched the same teams. Provide a date or game_id."
+            ],
+        }
+
+    return {
+        "summary": {
+            "resolution_status": "resolved",
+            "query": query,
+            "preference": preference,
+            "matched_teams": sorted(matched_teams),
+            "requested_date": requested_date,
+            "requested_game_number": requested_game_number,
+            "game_id": selected["game_id"],
+            "label": selected["label"],
+            "game_date": selected["game_date"],
+            "series_game_number": selected.get("series_game_number"),
+            "season_type": selected.get("season_type"),
+            "requested_season_type": season_type,
+            "searched_season_types": recent.get("summary", {}).get("searched_season_types", []),
+            "confidence": "medium" if matched_teams else "low",
+        },
+        "game": compact_game(selected),
+        "candidates": [compact_game(candidate) for candidate in candidates[:3]],
+        "source_status": recent.get("source_status", []),
+        "warnings": recent.get("warnings", []) if matched_teams else recent.get("warnings", []) + ["No team was specified; selected the latest completed game."],
+    }
+
+
+def persist_analysis_run(
+    *,
+    game_id: str,
+    user_question: str,
+    memo_markdown: str,
+    packet_ids: list[str],
+    db_path: Path = DEFAULT_DB,
+) -> str:
+    run_id = f"analysis_{game_id}_{uuid.uuid4().hex}"
+    con = connect(db_path, read_only=False)
+    con.execute(
+        """
+        INSERT INTO analysis_runs (
+            run_id, game_id, user_question, memo_markdown, packet_ids_json
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [run_id, game_id, user_question, memo_markdown, json.dumps(packet_ids)],
+    )
+    con.close()
+    return run_id
+
+
+def get_cached_games_status(
+    db_path: Path = DEFAULT_DB,
+    limit: int = 20,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    advanced_table_exists = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = 'box_scores_advanced_team'
+        """
+    ).fetchone()[0] > 0
+    advanced_count_sql = (
+        "(SELECT COUNT(*) FROM box_scores_advanced_team bat WHERE bat.game_id = g.game_id)"
+        if advanced_table_exists
+        else "0"
+    )
+    rows = con.execute(
+        f"""
+        SELECT
+            g.game_id,
+            g.game_date,
+            g.away_team_abbr || ' ' || g.away_score || ', ' || g.home_team_abbr || ' ' || g.home_score AS label,
+            g.source,
+            (SELECT COUNT(*) FROM box_scores_team bst WHERE bst.game_id = g.game_id) AS team_rows,
+            {advanced_count_sql} AS advanced_rows,
+            (SELECT COUNT(*) FROM box_scores_player bsp WHERE bsp.game_id = g.game_id) AS player_rows,
+            (SELECT COUNT(*) FROM play_by_play_events pbp WHERE pbp.game_id = g.game_id) AS pbp_rows,
+            (SELECT COUNT(*) FROM evidence_packets ep WHERE ep.game_id = g.game_id) AS evidence_rows
+        FROM games g
+        ORDER BY g.game_date DESC NULLS LAST, g.game_id DESC
+        LIMIT ?
+        """,
+        [limit],
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    con.close()
+    games = [dict(zip(cols, row)) for row in rows]
+    for game in games:
+        game["complete"] = (
+            game["team_rows"] >= 2
+            and game["advanced_rows"] >= 2
+            and game["player_rows"] > 0
+            and game["pbp_rows"] > 0
+        )
+        game["game_date"] = str(game["game_date"]) if game["game_date"] is not None else None
+    return {
+        "summary": {
+            "database": str(db_path),
+            "cached_game_count": len(games),
+            "advanced_table_exists": advanced_table_exists,
+        },
+        "games": games,
+        "warnings": [],
+    }
+
+
+def ensure_game_cached(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+    season: str | None = None,
+    season_type: str = "Playoffs",
+    timeout: int = 20,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    if not force_refresh:
+        try:
+            con = connect(db_path)
+            counts = con.execute(
+                """
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_name = 'box_scores_advanced_team'
+                """
+            ).fetchone()[0]
+            advanced_table_exists = counts > 0
+            counts = con.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM games WHERE game_id = ?) AS game_rows,
+                    (SELECT COUNT(*) FROM box_scores_team WHERE game_id = ?) AS team_rows,
+                    (SELECT COUNT(*) FROM box_scores_player WHERE game_id = ?) AS player_rows,
+                    (SELECT COUNT(*) FROM play_by_play_events WHERE game_id = ?) AS pbp_rows
+                """,
+                [game_id, game_id, game_id, game_id],
+            ).fetchone()
+            advanced_rows = 0
+            if advanced_table_exists:
+                advanced_rows = con.execute(
+                    "SELECT COUNT(*) FROM box_scores_advanced_team WHERE game_id = ?",
+                    [game_id],
+                ).fetchone()[0]
+            con.close()
+            game_rows, team_rows, player_rows, pbp_rows = counts
+            has_required_cache = game_rows >= 1 and team_rows >= 2 and player_rows > 0 and pbp_rows > 0 and advanced_rows >= 2
+            if has_required_cache:
+                return {
+                    "summary": {
+                        "game_id": game_id,
+                        "cache_status": "already_cached",
+                        "game_rows": game_rows,
+                        "team_rows": team_rows,
+                        "player_rows": player_rows,
+                        "pbp_rows": pbp_rows,
+                        "advanced_rows": advanced_rows,
+                    },
+                    "ingested": False,
+                    "warnings": [],
+                }
+        except duckdb.Error:
+            pass
+
+    ingest_result = import_official_game_bundle(
+        game_id=game_id,
+        db_path=db_path,
+        season=season,
+        season_type=season_type,
+        timeout=timeout,
+    )
+    return {
+        "summary": {
+            "game_id": game_id,
+            "cache_status": "refreshed" if force_refresh else "cached_from_official",
+            "source": "nba_api",
+            "ingest_summary": ingest_result.get("summary", ingest_result) if isinstance(ingest_result, dict) else None,
+        },
+        "ingested": True,
+        "warnings": [],
+    }
+
+
+def pct(numerator: float | None, denominator: float | None) -> float | None:
+    if denominator in (None, 0):
+        return None
+    if numerator is None:
+        return None
+    return round(float(numerator) / float(denominator), 4)
+
+
+def diff(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None:
+        return None
+    return round(float(a) - float(b), 4)
+
+
+def get_game_snapshot(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+    persist: bool = False,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    game = con.execute("SELECT * FROM games WHERE game_id = ?", [game_id]).fetchone()
+    if not game:
+        con.close()
+        return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
+    cols = [d[0] for d in con.description]
+    game_row = dict(zip(cols, game))
+    source_provider = "nba_official" if str(game_row.get("source", "")).startswith("nba_api:") else "local_fixture"
+    teams = con.execute(
+        """
+        SELECT team_side, team_abbr, fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
+               ftm, fta, oreb, dreb, reb, ast, stl, blk, tov, pf, pts
+        FROM box_scores_team
+        WHERE game_id = ?
+        ORDER BY team_side
+        """,
+        [game_id],
+    ).fetchall()
+    team_cols = [d[0] for d in con.description]
+    team_rows = [dict(zip(team_cols, row)) for row in teams]
+    winner_abbr = (
+        game_row["away_team_abbr"]
+        if game_row["away_score"] > game_row["home_score"]
+        else game_row["home_team_abbr"]
+    )
+    loser_abbr = (
+        game_row["home_team_abbr"]
+        if winner_abbr == game_row["away_team_abbr"]
+        else game_row["away_team_abbr"]
+    )
+    winner_score = max(game_row["away_score"], game_row["home_score"])
+    loser_score = min(game_row["away_score"], game_row["home_score"])
+    packet = {
+        "packet_id": packet_id("snapshot", game_id),
+        "type": "game_snapshot",
+        "claim_seed": (
+            f"{winner_abbr} defeated {loser_abbr} "
+            f"{winner_score}-{loser_score}."
+        ),
+        "source": {"provider": source_provider, "detail": game_row.get("source")},
+        "evidence_level": "core",
+        "confidence": "high",
+        "metrics": {
+            "away_score": game_row["away_score"],
+            "home_score": game_row["home_score"],
+        },
+    }
+    con.close()
+    return with_persisted_packets(game_id, {
+        "summary": {
+            "game_id": game_id,
+            "label": (
+                f"{game_row['away_team_abbr']} {game_row['away_score']}, "
+                f"{game_row['home_team_abbr']} {game_row['home_score']}"
+            ),
+            "date": str(game_row["game_date"]),
+            "season_type": game_row["season_type"],
+            "confidence": "high",
+        },
+        "team_box": team_rows,
+        "evidence_packets": [packet],
+        "available_expansions": [
+            {
+                "tool": "evidence.rehydrate_evidence_packet",
+                "packet_id": packet["packet_id"],
+                "description": "Show the game and team box rows behind this snapshot.",
+            }
+        ],
+        "warnings": [],
+    }, db_path, persist=persist)
+
+
+def get_box_score(
+    game_id: str,
+    level: str = "team",
+    detail: bool = False,
+    db_path: Path = DEFAULT_DB,
+) -> dict[str, Any]:
+    level = level.lower()
+    con = connect(db_path)
+    game = con.execute("SELECT game_id FROM games WHERE game_id = ?", [game_id]).fetchone()
+    if not game:
+        con.close()
+        return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
+    if level == "team":
+        rows = con.execute(
+            """
+            SELECT *
+            FROM box_scores_team
+            WHERE game_id = ?
+            ORDER BY team_side
+            """,
+            [game_id],
+        ).fetchall()
+    elif level == "player":
+        order_sql = "ORDER BY pts DESC NULLS LAST, plus_minus DESC NULLS LAST"
+        limit_sql = "" if detail else "LIMIT 10"
+        rows = con.execute(
+            f"""
+            SELECT *
+            FROM box_scores_player
+            WHERE game_id = ?
+            {order_sql}
+            {limit_sql}
+            """,
+            [game_id],
+        ).fetchall()
+    else:
+        con.close()
+        return {
+            "summary": {
+                "resolution_status": "invalid_level",
+                "game_id": game_id,
+                "level": level,
+            },
+            "warnings": ["level must be 'team' or 'player'."],
+        }
+    cols = [d[0] for d in con.description]
+    con.close()
+    rows_as_dicts = [dict(zip(cols, row)) for row in rows]
+    return {
+        "summary": {
+            "game_id": game_id,
+            "level": level,
+            "detail": detail,
+            "row_count": len(rows_as_dicts),
+            "confidence": "high" if rows_as_dicts else "low",
+        },
+        "box_score": rows_as_dicts,
+        "available_expansions": [] if detail else [
+            {
+                "tool": "game_context.get_box_score",
+                "description": f"Request detail=true for the full {level} box score.",
+            }
+        ],
+        "warnings": [] if rows_as_dicts else [f"No {level} box-score rows are cached for this game."],
+    }
+
+
+def clock_to_elapsed_seconds(period: int | None, clock: str | None) -> float | None:
+    if period is None or not clock or ":" not in clock:
+        return None
+    minutes, seconds = clock.split(":", 1)
+    try:
+        remaining = int(minutes) * 60 + float(seconds)
+    except ValueError:
+        return None
+    return ((int(period) - 1) * 720) + (720 - remaining)
+
+
+def infer_lineup_stints_from_substitutions(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+) -> int:
+    con = connect(db_path, read_only=False)
+    rows = con.execute(
+        """
+        SELECT eventnum, period, pctimestring, homedescription, visitordescription,
+               player1_id, player1_name, player1_team_id, player1_team_abbreviation
+        FROM play_by_play_events
+        WHERE game_id = ? AND eventmsgtype = 8
+        ORDER BY period, eventnum
+        """,
+        [game_id],
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    substitutions = [dict(zip(cols, row)) for row in rows]
+    if not substitutions:
+        con.close()
+        return 0
+    con.execute("DELETE FROM lineup_stints WHERE game_id = ? AND source = ?", [game_id, "pbp_substitution_inferred_v1"])
+    inferred_rows = []
+    for sub in substitutions:
+        description = sub.get("homedescription") or sub.get("visitordescription") or ""
+        match = re.search(r"SUB:\s*(.*?)\s+FOR\s+(.*)", description, flags=re.IGNORECASE)
+        incoming_name = match.group(1).strip() if match else None
+        outgoing_name = sub.get("player1_name") or (match.group(2).strip() if match else None)
+        team_abbr = sub.get("player1_team_abbreviation")
+        elapsed = clock_to_elapsed_seconds(sub.get("period"), sub.get("pctimestring"))
+        for role, player_name in (("in", incoming_name), ("out", outgoing_name)):
+            if not player_name:
+                continue
+            stint_id = packet_id("lineup-inferred", game_id, sub["eventnum"], role, player_name)
+            inferred_rows.append(
+                [
+                    stint_id,
+                    game_id,
+                    team_abbr,
+                    sub.get("player1_team_id"),
+                    sub.get("player1_id") if role == "out" else None,
+                    player_name,
+                    sub.get("period"),
+                    sub.get("pctimestring") if role == "in" else None,
+                    sub.get("pctimestring") if role == "out" else None,
+                    sub.get("eventnum") if role == "in" else None,
+                    sub.get("eventnum") if role == "out" else None,
+                    elapsed if role == "in" else None,
+                    elapsed if role == "out" else None,
+                    None,
+                    None,
+                    None,
+                    "pbp_substitution_inferred_v1",
+                    "low",
+                    "Substitution-derived rotation event, not an official five-man lineup stint.",
+                ]
+            )
+    if inferred_rows:
+        con.executemany(
+            """
+            INSERT OR REPLACE INTO lineup_stints (
+                stint_id, game_id, team_abbr, team_id, player_id, player_name,
+                period, start_clock, end_clock, start_eventnum, end_eventnum,
+                start_elapsed_seconds, end_elapsed_seconds, duration_seconds,
+                player_pts, plus_minus, source, confidence, caveat
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            inferred_rows,
+        )
+    con.close()
+    return len(inferred_rows)
+
+
+def get_lineup_stints(
+    game_id: str,
+    team: str | None = None,
+    period: int | None = None,
+    db_path: Path = DEFAULT_DB,
+    persist: bool = False,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    game = con.execute("SELECT game_id FROM games WHERE game_id = ?", [game_id]).fetchone()
+    if not game:
+        con.close()
+        return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
+    filters = ["game_id = ?"]
+    params: list[Any] = [game_id]
+    if team:
+        filters.append("upper(team_abbr) = upper(?)")
+        params.append(team)
+    if period:
+        filters.append("period = ?")
+        params.append(period)
+    where_sql = " AND ".join(filters)
+    count = con.execute(f"SELECT COUNT(*) FROM lineup_stints WHERE {where_sql}", params).fetchone()[0]
+    con.close()
+    if count == 0:
+        infer_lineup_stints_from_substitutions(game_id, db_path)
+    con = connect(db_path)
+    rows = con.execute(
+        f"""
+        SELECT stint_id, team_abbr, player_id, player_name, period, start_clock,
+               end_clock, start_eventnum, end_eventnum, duration_seconds,
+               player_pts, plus_minus, source, confidence, caveat
+        FROM lineup_stints
+        WHERE {where_sql}
+        ORDER BY COALESCE(start_elapsed_seconds, end_elapsed_seconds, 999999), team_abbr, player_name
+        LIMIT 30
+        """,
+        params,
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    source_counts = con.execute(
+        """
+        SELECT source, COUNT(*)
+        FROM lineup_stints
+        WHERE game_id = ?
+        GROUP BY source
+        ORDER BY source
+        """,
+        [game_id],
+    ).fetchall()
+    con.close()
+    stints = [dict(zip(cols, row)) for row in rows]
+    source_provider = "nba_official" if any(stint["source"] == "nba_api:GameRotation" for stint in stints) else "local_inference"
+    confidence = "high" if source_provider == "nba_official" else "low"
+    packet = {
+        "packet_id": packet_id("lineups", game_id, team or "all", period or "all"),
+        "type": "lineup_stints",
+        "claim_seed": "Rotation stint context is available for the requested game scope.",
+        "metrics": {
+            "returned_stints": len(stints),
+            "team": team,
+            "period": period,
+            "source_counts": {source: count for source, count in source_counts},
+        },
+        "source": {
+            "provider": source_provider,
+            "detail": "nba_api:GameRotation" if source_provider == "nba_official" else "play_by_play_events substitutions",
+        },
+        "evidence_level": "rotation_context" if source_provider == "nba_official" else "inferred_rotation_context",
+        "confidence": confidence,
+        "caveats": [] if source_provider == "nba_official" else [
+            "Fallback rows are substitution-derived rotation events, not validated five-man lineup stints."
+        ],
+    }
+    return with_persisted_packets(game_id, {
+        "summary": {
+            "game_id": game_id,
+            "team": team,
+            "period": period,
+            "stint_count": len(stints),
+            "lineup_model": "official_game_rotation" if source_provider == "nba_official" else "pbp_substitution_inferred_v1",
+            "confidence": confidence,
+        },
+        "stints": stints,
+        "evidence_packets": [packet],
+        "available_expansions": [
+            {
+                "tool": "evidence.rehydrate_evidence_packet",
+                "packet_id": packet["packet_id"],
+                "description": "Show rotation source and stint rows behind this packet.",
+            }
+        ],
+        "warnings": packet["caveats"],
+    }, db_path, persist=persist)
+
+
+def scoring_events(con: duckdb.DuckDBPyConnection, game_id: str) -> list[dict[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT eventnum, period, pctimestring, homedescription, visitordescription,
+               score_away, score_home
+        FROM play_by_play_events
+        WHERE game_id = ?
+          AND score_away IS NOT NULL
+          AND score_home IS NOT NULL
+        ORDER BY period, eventnum
+        """,
+        [game_id],
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def find_decisive_runs(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+    max_events: int = 16,
+    persist: bool = False,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    game = con.execute(
+        "SELECT home_team_abbr, away_team_abbr, home_score, away_score FROM games WHERE game_id = ?",
+        [game_id],
+    ).fetchone()
+    if not game:
+        con.close()
+        return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
+    home_abbr, away_abbr, home_score, away_score = game
+    winning_team = away_abbr if away_score > home_score else home_abbr
+    events = scoring_events(con, game_id)
+    pbp_source = con.execute(
+        "SELECT source FROM play_by_play_events WHERE game_id = ? AND source IS NOT NULL LIMIT 1",
+        [game_id],
+    ).fetchone()
+    source_detail = pbp_source[0] if pbp_source else "old/nba.sqlite:play_by_play"
+    source_provider = "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture"
+    candidates: list[dict[str, Any]] = []
+    for start_idx in range(len(events)):
+        start = events[start_idx]
+        start_margin_away = start["score_away"] - start["score_home"]
+        for end_idx in range(start_idx + 3, min(len(events), start_idx + max_events)):
+            end = events[end_idx]
+            away_delta = end["score_away"] - start["score_away"]
+            home_delta = end["score_home"] - start["score_home"]
+            score_delta = away_delta - home_delta
+            abs_delta = abs(score_delta)
+            if abs_delta < 7:
+                continue
+            end_margin_away = end["score_away"] - end["score_home"]
+            beneficiary = away_abbr if score_delta > 0 else home_abbr
+            start_margin_for_beneficiary = start_margin_away if beneficiary == away_abbr else -start_margin_away
+            end_margin_for_beneficiary = end_margin_away if beneficiary == away_abbr else -end_margin_away
+            lead_flip_bonus = 3 if start_margin_for_beneficiary <= 0 < end_margin_for_beneficiary else 0
+            lead_extension_bonus = 2 if start_margin_for_beneficiary > 0 and end_margin_for_beneficiary > start_margin_for_beneficiary else 0
+            winner_bonus = 8 if beneficiary == winning_team else 0
+            late_bonus = max(0, start["period"] - 2) * 2
+            clutch_bonus = 4 if start["period"] >= 4 and end_margin_for_beneficiary <= 10 else 0
+            opening_penalty = -5 if start["period"] == 1 and start["score_away"] == 0 and start["score_home"] == 0 else 0
+            rank_score = (
+                abs_delta
+                + winner_bonus
+                + lead_flip_bonus
+                + lead_extension_bonus
+                + late_bonus
+                + clutch_bonus
+                + opening_penalty
+            )
+            candidates.append(
+                {
+                    "rank_score": rank_score,
+                    "beneficiary": beneficiary,
+                    "winning_team": winning_team,
+                    "period_start": start["period"],
+                    "clock_start": start["pctimestring"],
+                    "period_end": end["period"],
+                    "clock_end": end["pctimestring"],
+                    "start_eventnum": start["eventnum"],
+                    "end_eventnum": end["eventnum"],
+                    "away_delta": away_delta,
+                    "home_delta": home_delta,
+                    "score_delta_for_beneficiary": abs_delta,
+                    "start_margin_for_beneficiary": start_margin_for_beneficiary,
+                    "end_margin_for_beneficiary": end_margin_for_beneficiary,
+                    "rank_factors": {
+                        "winner_bonus": winner_bonus,
+                        "lead_flip_bonus": lead_flip_bonus,
+                        "lead_extension_bonus": lead_extension_bonus,
+                        "late_bonus": late_bonus,
+                        "clutch_bonus": clutch_bonus,
+                        "opening_penalty": opening_penalty,
+                    },
+                    "start_score": f"{away_abbr} {start['score_away']}, {home_abbr} {start['score_home']}",
+                    "end_score": f"{away_abbr} {end['score_away']}, {home_abbr} {end['score_home']}",
+                }
+            )
+    candidates = sorted(candidates, key=lambda item: item["rank_score"], reverse=True)[:3]
+    packets = []
+    for idx, candidate in enumerate(candidates, start=1):
+        pid = packet_id("run", game_id, idx, candidate["start_eventnum"], candidate["end_eventnum"])
+        compact_metrics = {
+            "beneficiary": candidate["beneficiary"],
+            "period_start": candidate["period_start"],
+            "clock_start": candidate["clock_start"],
+            "period_end": candidate["period_end"],
+            "clock_end": candidate["clock_end"],
+            "start_eventnum": candidate["start_eventnum"],
+            "end_eventnum": candidate["end_eventnum"],
+            "score_delta_for_beneficiary": candidate["score_delta_for_beneficiary"],
+            "start_margin_for_beneficiary": candidate["start_margin_for_beneficiary"],
+            "end_margin_for_beneficiary": candidate["end_margin_for_beneficiary"],
+            "start_score": candidate["start_score"],
+            "end_score": candidate["end_score"],
+            "rank_score": candidate["rank_score"],
+        }
+        packets.append(
+            {
+                "packet_id": pid,
+                "type": "run_candidate",
+                "rank": idx,
+                "claim_seed": (
+                    f"{candidate['beneficiary']} had a +{candidate['score_delta_for_beneficiary']} "
+                    f"scoring window from Q{candidate['period_start']} {candidate['clock_start']} "
+                    f"to Q{candidate['period_end']} {candidate['clock_end']}."
+                ),
+                "window": {
+                    "period_start": candidate["period_start"],
+                    "clock_start": candidate["clock_start"],
+                    "period_end": candidate["period_end"],
+                    "clock_end": candidate["clock_end"],
+                    "start_eventnum": candidate["start_eventnum"],
+                    "end_eventnum": candidate["end_eventnum"],
+                },
+                "metrics": compact_metrics,
+                "source": {"provider": source_provider, "detail": source_detail},
+                "evidence_level": "core_inferred",
+                "confidence": "medium",
+                "caveats": ["Run detection is deterministic v1 scoring-window logic, not a final basketball conclusion."],
+            }
+        )
+    con.close()
+    return with_persisted_packets(game_id, {
+        "summary": {
+            "game_id": game_id,
+            "candidate_count": len(packets),
+            "method": "outcome_aware_scoring_window_v2",
+            "winning_team": winning_team,
+            "confidence": "medium",
+        },
+        "evidence_packets": packets,
+        "available_expansions": [
+            {
+                "tool": "evidence.rehydrate_evidence_packet",
+                "packet_id": packet["packet_id"],
+                "description": "Show play-by-play events inside this scoring window.",
+            }
+            for packet in packets
+        ],
+        "warnings": ["Candidate ranking is a heuristic that prefers winning-team and late-game context."],
+    }, db_path, persist=persist)
+
+
+def get_possession_summary(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+    persist: bool = False,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    rows = con.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE eventmsgtype IN (1, 2, 3, 5)) AS terminal_like_events,
+            COUNT(*) FILTER (WHERE eventmsgtype = 5) AS turnovers,
+            COUNT(*) FILTER (WHERE eventmsgtype = 3) AS free_throw_events,
+            COUNT(*) FILTER (WHERE eventmsgtype IN (1, 2)) AS shot_events
+        FROM play_by_play_events
+        WHERE game_id = ?
+        """,
+        [game_id],
+    ).fetchone()
+    pbp_source = con.execute(
+        "SELECT source FROM play_by_play_events WHERE game_id = ? AND source IS NOT NULL LIMIT 1",
+        [game_id],
+    ).fetchone()
+    con.close()
+    terminal_like, turnovers, free_throw_events, shot_events = rows
+    source_detail = pbp_source[0] if pbp_source else "old/nba.sqlite:play_by_play"
+    source_provider = "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture"
+    packet = {
+        "packet_id": packet_id("possession-summary", game_id),
+        "type": "possession_segment_summary",
+        "claim_seed": "Play-by-play event mix gives a first-pass possession-segment context.",
+        "metrics": {
+            "terminal_like_events": terminal_like,
+            "turnovers": turnovers,
+            "free_throw_events": free_throw_events,
+            "shot_events": shot_events,
+        },
+        "source": {"provider": source_provider, "detail": source_detail},
+        "evidence_level": "core_inferred",
+        "confidence": "medium",
+        "caveats": ["This is not a perfect possession model."],
+    }
+    return with_persisted_packets(game_id, {
+        "summary": {
+            "game_id": game_id,
+            "possession_model": "pbp_inferred_v1",
+            "unit_name": "possession_segment",
+            "confidence": "medium",
+        },
+        "evidence_packets": [packet],
+        "available_expansions": [
+            {
+                "tool": "evidence.rehydrate_evidence_packet",
+                "packet_id": packet["packet_id"],
+                "description": "Show source event counts used by the first-pass possession summary.",
+            }
+        ],
+        "warnings": ["Possession segmentation is intentionally approximate in v1."],
+    }, db_path, persist=persist)
+
+
+def get_advanced_game_context(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+    persist: bool = False,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    game = con.execute(
+        "SELECT away_team_abbr, home_team_abbr FROM games WHERE game_id = ?",
+        [game_id],
+    ).fetchone()
+    if not game:
+        con.close()
+        return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
+    advanced_table_exists = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = 'box_scores_advanced_team'
+        """
+    ).fetchone()[0] > 0
+    if advanced_table_exists:
+        advanced_rows = con.execute(
+            """
+            SELECT team_abbr, offensive_rating, defensive_rating, net_rating,
+                   assist_pct, assist_to_turnover, assist_ratio, oreb_pct, dreb_pct,
+                   reb_pct, estimated_team_tov_pct, turnover_ratio, efg_pct, ts_pct,
+                   pace, possessions, pie, source
+            FROM box_scores_advanced_team
+            WHERE game_id = ?
+            ORDER BY team_abbr
+            """,
+            [game_id],
+        ).fetchall()
+        advanced_cols = [d[0] for d in con.description]
+        if len(advanced_rows) == 2:
+            con.close()
+            away_abbr, home_abbr = game
+            advanced_by_team = {row["team_abbr"]: row for row in [dict(zip(advanced_cols, r)) for r in advanced_rows]}
+            away_metrics = advanced_by_team[away_abbr]
+            home_metrics = advanced_by_team[home_abbr]
+            metric_edges = {
+                "offensive_rating": diff(away_metrics["offensive_rating"], home_metrics["offensive_rating"]),
+                "defensive_rating": diff(away_metrics["defensive_rating"], home_metrics["defensive_rating"]),
+                "net_rating": diff(away_metrics["net_rating"], home_metrics["net_rating"]),
+                "efg_pct": diff(away_metrics["efg_pct"], home_metrics["efg_pct"]),
+                "ts_pct": diff(away_metrics["ts_pct"], home_metrics["ts_pct"]),
+                "turnover_ratio": diff(away_metrics["turnover_ratio"], home_metrics["turnover_ratio"]),
+                "pie": diff(away_metrics["pie"], home_metrics["pie"]),
+            }
+            leader = away_abbr if (metric_edges["net_rating"] or 0) > 0 else home_abbr
+            packet = {
+                "packet_id": packet_id("adv", game_id, "official-team-advanced"),
+                "type": "advanced_context",
+                "claim_seed": (
+                    f"Official NBA advanced context favors {leader} by net rating, "
+                    "shot quality, and possession efficiency indicators."
+                ),
+                "metrics": {
+                    away_abbr: away_metrics,
+                    home_abbr: home_metrics,
+                    f"{away_abbr}_minus_{home_abbr}": metric_edges,
+                },
+                "source": {
+                    "provider": "nba_official",
+                    "detail": "nba_api:BoxScoreAdvancedV3",
+                },
+                "evidence_level": "official_advanced",
+                "confidence": "high",
+                "caveats": [],
+            }
+            return with_persisted_packets(game_id, {
+                "summary": {
+                    "game_id": game_id,
+                    "advanced_context_source": "nba_official",
+                    "headline": f"{leader} had the stronger official advanced profile.",
+                    "confidence": "high",
+                },
+                "team_metrics": packet["metrics"],
+                "evidence_packets": [packet],
+                "available_expansions": [
+                    {
+                        "tool": "evidence.rehydrate_evidence_packet",
+                        "packet_id": packet["packet_id"],
+                        "description": "Show official NBA BoxScoreAdvancedV3 team metrics.",
+                    }
+                ],
+                "warnings": [],
+            }, db_path, persist=persist)
+    rows = con.execute(
+        """
+        SELECT team_side, team_abbr, fgm, fga, fg3m, fg3a, ftm, fta,
+               oreb, dreb, reb, ast, stl, blk, tov, pts
+        FROM box_scores_team
+        WHERE game_id = ?
+        ORDER BY team_side
+        """,
+        [game_id],
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    con.close()
+    teams = {row["team_side"]: row for row in [dict(zip(cols, r)) for r in rows]}
+    if "away" not in teams or "home" not in teams:
+        return {"summary": {"resolution_status": "missing_box_score", "game_id": game_id}}
+
+    away = teams["away"]
+    home = teams["home"]
+
+    def metrics(team: dict[str, Any], opp: dict[str, Any]) -> dict[str, Any]:
+        fga = team["fga"]
+        fgm = team["fgm"]
+        fg3m = team["fg3m"]
+        fta = team["fta"]
+        tov = team["tov"]
+        oreb = team["oreb"]
+        opp_dreb = opp["dreb"]
+        # This is the common estimated possession formula. It is a fallback proxy,
+        # not official NBA Four Factors output.
+        estimated_possessions = float(fga) + 0.44 * float(fta) - float(oreb) + float(tov)
+        return {
+            "efg_pct": pct(float(fgm) + 0.5 * float(fg3m), fga),
+            "three_point_rate": pct(team["fg3a"], fga),
+            "free_throw_rate": pct(fta, fga),
+            "tov_per_est_possession": pct(tov, estimated_possessions),
+            "oreb_pct": pct(oreb, float(oreb) + float(opp_dreb)),
+            "ast_to_tov": pct(team["ast"], tov),
+            "estimated_possessions": round(estimated_possessions, 2),
+            "points_per_est_possession": pct(team["pts"], estimated_possessions),
+        }
+
+    away_metrics = metrics(away, home)
+    home_metrics = metrics(home, away)
+    metric_edges = {
+        "efg_pct": diff(away_metrics["efg_pct"], home_metrics["efg_pct"]),
+        "three_point_rate": diff(away_metrics["three_point_rate"], home_metrics["three_point_rate"]),
+        "free_throw_rate": diff(away_metrics["free_throw_rate"], home_metrics["free_throw_rate"]),
+        "tov_per_est_possession": diff(away_metrics["tov_per_est_possession"], home_metrics["tov_per_est_possession"]),
+        "oreb_pct": diff(away_metrics["oreb_pct"], home_metrics["oreb_pct"]),
+        "points_per_est_possession": diff(
+            away_metrics["points_per_est_possession"],
+            home_metrics["points_per_est_possession"],
+        ),
+    }
+    away_abbr = away["team_abbr"]
+    home_abbr = home["team_abbr"]
+    packets = [
+        {
+            "packet_id": packet_id("adv", game_id, "fallback-four-factors"),
+            "type": "advanced_context",
+            "claim_seed": (
+                f"Fallback box-score advanced context favors {away_abbr} through "
+                f"efficiency, turnover margin, and three-point shooting."
+            ),
+            "metrics": {
+                away_abbr: away_metrics,
+                home_abbr: home_metrics,
+                f"{away_abbr}_minus_{home_abbr}": metric_edges,
+            },
+            "source": {
+                "provider": "local_fallback",
+                "detail": "box_scores_team formulas; official NBA advanced endpoints not wired yet",
+            },
+            "evidence_level": "fallback_advanced",
+            "confidence": "medium",
+            "caveats": [
+                "These are local fallback estimates, not official NBA advanced endpoint values.",
+                "Official NBA advanced endpoints should replace these values when available.",
+            ],
+        }
+    ]
+    summary_edge = metric_edges["points_per_est_possession"]
+    leader = away_abbr if summary_edge is not None and summary_edge > 0 else home_abbr
+    return with_persisted_packets(game_id, {
+        "summary": {
+            "game_id": game_id,
+            "advanced_context_source": "local_fallback",
+            "headline": (
+                f"{leader} had the stronger fallback advanced profile; "
+                "official NBA advanced rows are not cached for this game."
+            ),
+            "confidence": "medium",
+        },
+        "team_metrics": {
+            away_abbr: away_metrics,
+            home_abbr: home_metrics,
+            f"{away_abbr}_minus_{home_abbr}": metric_edges,
+        },
+        "evidence_packets": packets,
+        "available_expansions": [
+            {
+                "tool": "evidence.rehydrate_evidence_packet",
+                "packet_id": packets[0]["packet_id"],
+                "description": "Show local fallback advanced metrics and caveats.",
+            }
+        ],
+        "warnings": [
+            "Fallback advanced stats are computed from local team box score until official NBA advanced rows are cached."
+        ],
+    }, db_path, persist=persist)
+
+
+def get_player_game_context(
+    game_id: str,
+    db_path: Path = DEFAULT_DB,
+    persist: bool = False,
+) -> dict[str, Any]:
+    con = connect(db_path)
+    game = con.execute(
+        "SELECT away_team_abbr, home_team_abbr FROM games WHERE game_id = ?",
+        [game_id],
+    ).fetchone()
+    if not game:
+        con.close()
+        return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
+    rows = con.execute(
+        """
+        SELECT player_id, player_name, team_abbr, minutes, pts, reb, ast, stl, blk,
+               tov, fgm, fga, fg3m, fg3a, ftm, fta, plus_minus, source
+        FROM box_scores_player
+        WHERE game_id = ?
+        ORDER BY pts DESC NULLS LAST, plus_minus DESC NULLS LAST
+        LIMIT 10
+        """,
+        [game_id],
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    con.close()
+    player_rows = [dict(zip(cols, row)) for row in rows]
+    if not player_rows:
+        return {
+            "summary": {
+                "game_id": game_id,
+                "resolution_status": "player_box_unavailable",
+                "confidence": "low",
+            },
+            "evidence_packets": [],
+            "available_expansions": [],
+            "warnings": [
+                "No player box-score rows are available in the local cache.",
+                "Next data step is official NBA player box-score ingestion for this game.",
+            ],
+        }
+
+    def compact_player(player: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "player_name": player["player_name"],
+            "team_abbr": player["team_abbr"],
+            "minutes": player["minutes"],
+            "pts": player["pts"],
+            "reb": player["reb"],
+            "ast": player["ast"],
+            "stl": player["stl"],
+            "blk": player["blk"],
+            "tov": player["tov"],
+            "fg": f"{player['fgm']}-{player['fga']}",
+            "fg3": f"{player['fg3m']}-{player['fg3a']}",
+            "ft": f"{player['ftm']}-{player['fta']}",
+            "plus_minus": player["plus_minus"],
+        }
+
+    compact_players = [compact_player(player) for player in player_rows]
+    packets = []
+    for idx, player in enumerate(player_rows[:5], start=1):
+        pid = packet_id("player", game_id, idx, player["player_id"])
+        compact = compact_player(player)
+        packets.append(
+            {
+                "packet_id": pid,
+                "type": "player_game_context",
+                "rank": idx,
+                "claim_seed": (
+                    f"{player['player_name']} led available local player context with "
+                    f"{player['pts']} points, {player['reb']} rebounds, and {player['ast']} assists."
+                ),
+                "metrics": compact,
+                "source": {
+                    "provider": "nba_official" if str(player["source"]).startswith("nba_api:") else "local_seed",
+                    "detail": player["source"],
+                },
+                "evidence_level": "core",
+                "confidence": "high" if str(player["source"]).startswith("nba_api:") else "medium",
+                "caveats": [] if str(player["source"]).startswith("nba_api:") else ["Player names may require enrichment when sourced from seed logs."],
+            }
+        )
+    return with_persisted_packets(game_id, {
+        "summary": {
+            "game_id": game_id,
+            "player_count": len(player_rows),
+            "headline": "Top player box-score context is available.",
+            "confidence": "medium",
+        },
+        "players": compact_players,
+        "evidence_packets": packets,
+        "available_expansions": [
+            {
+                "tool": "evidence.rehydrate_evidence_packet",
+                "packet_id": packet["packet_id"],
+                "description": "Show player box-score context packet.",
+            }
+            for packet in packets
+        ],
+        "warnings": [],
+    }, db_path, persist=persist)
+
+
+def rehydrate_evidence_packet(packet_id_value: str, game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
+    con = connect(db_path)
+    stored_packet = con.execute(
+        """
+        SELECT packet_id, packet_type, claim_seed, source_provider, source_detail,
+               evidence_level, confidence, payload_json
+        FROM evidence_packets
+        WHERE packet_id = ? AND game_id = ?
+        """,
+        [packet_id_value, game_id],
+    ).fetchone()
+    if stored_packet:
+        cols = [d[0] for d in con.description]
+        stored = dict(zip(cols, stored_packet))
+        stored["payload"] = json.loads(stored.pop("payload_json"))
+        con.close()
+        return {
+            "summary": {
+                "packet_id": packet_id_value,
+                "game_id": game_id,
+                "source": "evidence_packets",
+            },
+            "packet": stored,
+        }
+    if packet_id_value.startswith("run_"):
+        parts = packet_id_value.split("_")
+        start_event = int(parts[-2])
+        end_event = int(parts[-1])
+        rows = con.execute(
+            """
+            SELECT eventnum, period, pctimestring, homedescription, visitordescription, score
+            FROM play_by_play_events
+            WHERE game_id = ?
+              AND eventnum BETWEEN ? AND ?
+            ORDER BY period, eventnum
+            """,
+            [game_id, start_event, end_event],
+        ).fetchall()
+        cols = [d[0] for d in con.description]
+        con.close()
+        return {
+            "summary": {
+                "packet_id": packet_id_value,
+                "game_id": game_id,
+                "row_count": len(rows),
+                "source": "play_by_play_events",
+            },
+            "rows": [dict(zip(cols, row)) for row in rows],
+        }
+    if packet_id_value.startswith("snapshot_"):
+        snapshot = get_game_snapshot(game_id, db_path)
+        con.close()
+        return {"summary": {"packet_id": packet_id_value, "game_id": game_id}, "snapshot": snapshot}
+    con.close()
+    return {
+        "summary": {
+            "packet_id": packet_id_value,
+            "game_id": game_id,
+            "resolution_status": "not_found_or_not_yet_persisted",
+        }
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("tool", choices=["recent-games", "resolve-game", "ensure-cache", "snapshot", "advanced", "players", "runs", "possessions", "lineups", "rehydrate"])
+    parser.add_argument("--game-id", default="0042200404")
+    parser.add_argument("--query", default="")
+    parser.add_argument("--packet-id")
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--season")
+    parser.add_argument("--season-type", default="Playoffs")
+    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--timeout", type=int, default=20)
+    parser.add_argument("--force-refresh", action="store_true")
+    args = parser.parse_args()
+
+    if args.tool == "recent-games":
+        result = find_recent_completed_games(args.season, args.season_type, args.limit, args.timeout)
+    elif args.tool == "resolve-game":
+        if not args.query:
+            raise SystemExit("--query is required for resolve-game")
+        result = resolve_game_reference(args.query, args.season, args.season_type, args.limit, args.timeout)
+    elif args.tool == "ensure-cache":
+        result = ensure_game_cached(args.game_id, args.db, args.season, args.season_type, args.timeout, args.force_refresh)
+    elif args.tool == "snapshot":
+        result = get_game_snapshot(args.game_id, args.db)
+    elif args.tool == "advanced":
+        result = get_advanced_game_context(args.game_id, args.db)
+    elif args.tool == "players":
+        result = get_player_game_context(args.game_id, args.db)
+    elif args.tool == "runs":
+        result = find_decisive_runs(args.game_id, args.db)
+    elif args.tool == "possessions":
+        result = get_possession_summary(args.game_id, args.db)
+    elif args.tool == "lineups":
+        result = get_lineup_stints(args.game_id, db_path=args.db)
+    else:
+        if not args.packet_id:
+            raise SystemExit("--packet-id is required for rehydrate")
+        result = rehydrate_evidence_packet(args.packet_id, args.game_id, args.db)
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
