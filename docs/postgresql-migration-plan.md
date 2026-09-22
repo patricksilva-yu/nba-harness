@@ -34,9 +34,8 @@ The storage migration covers these logical tables:
 10. `ingestion_jobs`
 
 The completed historical transfer also preserves `seed_player_game_logs` as a
-legacy table outside this canonical operational set. Its special rerun and
-deduplication constraints are documented in
-[`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
+legacy table outside this canonical operational set. It has no stable source
+primary key, so its transfer must not be rerun without a deduplication plan.
 
 It also covers every application path that currently creates, reads, updates, or passes a DuckDB connection, particularly:
 
@@ -51,7 +50,7 @@ It also covers every application path that currently creates, reads, updates, or
 
 Establish the current DuckDB behavior before changing the implementation.
 
-**Status:** Complete. See [`postgresql-phase-1-baseline.md`](postgresql-phase-1-baseline.md) and `tests/test_storage_baseline.py`.
+**Status:** Complete. The baseline assertions are covered by `tests/test_storage_baseline.py`.
 
 ### Work
 
@@ -110,7 +109,7 @@ Reviewed, versioned PostgreSQL migrations that repeatedly initialize a valid emp
 
 Remove database-specific concerns from application and domain logic.
 
-**Status:** Complete. See [`postgresql-phase-3-storage-boundary.md`](postgresql-phase-3-storage-boundary.md).
+**Status:** Complete.
 
 ### Work
 
@@ -144,7 +143,7 @@ Application code that no longer depends directly on `duckdb.DuckDBPyConnection`.
 
 ## Phase 4: PostgreSQL Runtime Implementation
 
-**Status:** Complete. See [`postgresql-phase-4-runtime.md`](postgresql-phase-4-runtime.md).
+**Status:** Complete. Runtime and connection settings are documented in [`postgresql-development.md`](postgresql-development.md).
 
 Implement PostgreSQL as a complete application backend.
 
@@ -174,7 +173,7 @@ A fully functional PostgreSQL runtime backend rather than a configuration-only s
 
 ## Phase 5: Retention and Operations
 
-**Status:** Complete. See [`postgresql-phase-5-operations.md`](postgresql-phase-5-operations.md).
+**Status:** Complete. Retention and operational procedures are documented in [`postgresql-development.md`](postgresql-development.md).
 
 Define production behavior for storage growth, security, reliability, and observability.
 
@@ -202,7 +201,7 @@ Documented and implemented operational policies, including raw-response retentio
 
 ## Phase 6: Verification and Parity Testing
 
-**Status:** Complete. See [`postgresql-phase-6-verification.md`](postgresql-phase-6-verification.md).
+**Status:** Complete. The test commands are documented in [`postgresql-development.md`](postgresql-development.md).
 
 Demonstrate that the backend replacement preserves product behavior.
 
@@ -239,9 +238,11 @@ Automated evidence that the database change did not silently alter application b
 
 ## Phase 7: Historical Data Transfer
 
-**Status:** Complete. See [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
+**Status:** Complete.
 
-Completed on 2026-09-22. The legacy DuckDB cache was copied into the configured PostgreSQL database after an immutable backup was made. See [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md) for counts, provenance, and rerun safety.
+Completed on 2026-09-22. The legacy DuckDB cache was copied into the configured PostgreSQL database after an immutable backup was made. The source was `/Users/patrick/Developer/nba/data/nba_agent.duckdb`; its private backup had SHA-256 `16999fdd436d8f93923aa504181fda8fc1acccaa7a7fedd7dddd82e841645911`. Alembic revision `20260922_03` added the legacy `seed_player_game_logs` table for this transfer.
+
+The source rows and target counts after transfer were: `raw_responses` 62/67, `games` 8/9, `box_scores_team` 16/18, `box_scores_player` 226/226, `box_scores_advanced_team` 14/14, `play_by_play_events` 3,892/3,892, `lineup_stints` 86/86, `evidence_packets` 53/53, `analysis_runs` 44/44, `ingestion_jobs` 0/0, and `seed_player_game_logs` 150,801/150,801. The three larger target counts were pre-existing representative PostgreSQL records. The database measured 68 MB after transfer.
 
 ### Work
 

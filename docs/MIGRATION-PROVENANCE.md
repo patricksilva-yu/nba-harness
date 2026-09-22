@@ -10,5 +10,6 @@ At capture time, it contained modifications to `.env.example`, `.github/workflow
 `README.md`, selected `api/nba_agent` files, `api/models.py`, `api/routes.py`, selected frontend
 and test files; and untracked application files in `api/nba_agent`, `docs`, `evals`, and `tests`.
 
-The migration copied only the allowlist defined in `docs/MIGRATION.md`. It intentionally excludes
-secrets, installed dependencies, caches, generated output, local DuckDB data, and legacy experiments.
+The migration copied an allowlisted set of application source, tests, evaluation
+fixtures, and design documents. It intentionally excluded secrets, installed
+dependencies, caches, generated output, local DuckDB data, and legacy experiments.

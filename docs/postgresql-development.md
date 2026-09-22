@@ -98,6 +98,34 @@ alembic upgrade head
 ```
 
 Do not use the disposable test URL for the active application, and do not put
-the active connection string in committed files. The current hosted database
-and historical transfer are documented in
-[`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
+the active connection string in committed files.
+
+## Runtime and operations
+
+`PostgresStorage` uses a bounded process-local connection pool. Each storage
+scope is transactional; successful scopes commit and database failures roll
+back. Queries remain parameterized through the storage boundary, and startup
+checks the Alembic version instead of creating PostgreSQL tables.
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `NBA_DB_POOL_MIN` | 1 | Warm pooled connections |
+| `NBA_DB_POOL_MAX` | 5 | Upper bound per application process |
+| `NBA_DB_CONNECT_TIMEOUT_SECONDS` | 5 | Bound failed connection attempts |
+| `NBA_DB_STATEMENT_TIMEOUT_MS` | 10000 | Cancel unexpectedly slow statements |
+
+Keep the combined maximum pool size below the database connection limit,
+including administrative and migration connections. `GET /api/health/storage`
+checks the active adapter without exposing connection details.
+
+`raw_responses` retains redacted upstream captures for 60 days by default.
+Run bounded cleanup batches from a scheduler when deployed:
+
+```bash
+source .venv/bin/activate
+NBA_STORAGE_BACKEND=postgres DATABASE_URL='postgresql://...' \
+  python scripts/cleanup_raw_responses.py --retention-days 60 --batch-size 500
+```
+
+The command reports deletion counts only. Take an encrypted backup and verify
+a restore into an isolated database before every production schema migration.
