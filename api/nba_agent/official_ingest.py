@@ -14,6 +14,7 @@ from nba_api.stats.endpoints import boxscoreadvancedv3, boxscoretraditionalv3, g
 
 from api.nba_agent.db import DEFAULT_DB, create_schema, get_storage
 from api.nba_agent.storage import StorageConnection
+from api.nba_agent.storage.redaction import redact_sensitive_payload
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,8 +44,8 @@ def persist_raw_response(
             "nba_api",
             endpoint,
             str(game_id) if game_id else None,
-            json.dumps(request, default=str),
-            json.dumps(payload, default=str),
+            json.dumps(redact_sensitive_payload(request), default=str),
+            json.dumps(redact_sensitive_payload(payload), default=str),
         ],
     )
     return response_id

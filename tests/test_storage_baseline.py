@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -9,6 +10,9 @@ from api.nba_agent.ingestion_jobs import (
     get_ingestion_job,
     update_ingestion_job,
 )
+from api.nba_agent.official_ingest import persist_raw_response
+from api.nba_agent.storage.operations import cleanup_expired_raw_responses, storage_health
+from api.nba_agent.storage.redaction import REDACTED, redact_sensitive_payload
 from api.nba_agent.tools import persist_analysis_run, persist_evidence_packets
 
 
@@ -210,3 +214,52 @@ def test_ingestion_job_rejects_unknown_state_and_returns_none_for_missing_job(tm
         update_ingestion_job("missing", "cancelled", db_path=db_path)
 
     assert get_ingestion_job("missing", db_path) is None
+
+
+def test_raw_response_redaction_and_bounded_retention_cleanup(tmp_path):
+    db_path = tmp_path / "retention.duckdb"
+    initialize_database(db_path)
+    storage = get_storage(db_path)
+    connection = storage.open(read_only=False)
+    old_id = persist_raw_response(
+        connection,
+        endpoint="test",
+        game_id=None,
+        request={"authorization": "Bearer private", "safe": "value"},
+        response={"nested": {"api_key": "private"}},
+    )
+    new_id = persist_raw_response(
+        connection,
+        endpoint="test",
+        game_id=None,
+        request={},
+        response={},
+    )
+    connection.close()
+    connection = storage.open()
+    redacted = connection.execute(
+        "SELECT request_json, response_json FROM raw_responses WHERE response_id = ?", [old_id]
+    ).fetchone()
+    connection.close()
+    assert json.loads(redacted[0])["authorization"] == REDACTED
+    assert json.loads(redacted[1])["nested"]["api_key"] == REDACTED
+    now = datetime.now(timezone.utc)
+    connection = storage.open(read_only=False)
+    connection.execute(
+        "UPDATE raw_responses SET fetched_at = ? WHERE response_id = ?",
+        [now - timedelta(days=61), old_id],
+    )
+    connection.close()
+
+    assert cleanup_expired_raw_responses(storage, retention_days=60, batch_size=1, now=now) == 1
+    connection = storage.open()
+    rows = connection.execute(
+        "SELECT response_id, request_json, response_json FROM raw_responses ORDER BY response_id"
+    ).fetchall()
+    connection.close()
+    assert rows == [(new_id, "{}", "{}")]
+    assert redact_sensitive_payload({"token": "x", "normal": ["ok"]}) == {
+        "token": REDACTED,
+        "normal": ["ok"],
+    }
+    assert storage_health(storage) == {"status": "ok", "backend": "duckdb"}

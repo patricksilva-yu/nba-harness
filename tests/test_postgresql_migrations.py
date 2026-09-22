@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 from api.nba_agent.storage import PostgresStorage, StorageError
+from api.nba_agent.storage.operations import cleanup_expired_raw_responses, storage_health
 from api.nba_agent.storage.repositories import AnalysisRunRepository, EvidenceRepository, IngestionJobRepository
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,18 @@ def test_postgres_storage_executes_parameterized_upserts_and_rolls_back_failures
         assert connection.execute("SELECT packet_ids_json FROM analysis_runs WHERE run_id = ?", [run_id]).fetchone() == (["packet_1"],)
         connection.close()
         assert IngestionJobRepository(storage).get(job["job_id"])["result"] == {"run_id": run_id}
+
+        connection = storage.open(read_only=False)
+        connection.execute(
+            """
+            INSERT INTO raw_responses (response_id, provider, endpoint, request_json, response_json, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ["old_raw", "test", "test", "{}", "{}", datetime.now(timezone.utc) - timedelta(days=61)],
+        )
+        connection.close()
+        assert cleanup_expired_raw_responses(storage, retention_days=60, batch_size=10) == 1
+        assert storage_health(storage) == {"status": "ok", "backend": "postgres"}
 
         failed = storage.open(read_only=False)
         failed.execute("INSERT INTO games (game_id, source) VALUES (?, ?)", ["rolled_back", "test"])

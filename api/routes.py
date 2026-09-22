@@ -8,14 +8,23 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from api.models import AskRequest, IngestionRequest
 from api.nba_agent.agent import run_agent
-from api.nba_agent.db import storage_config
+from api.nba_agent.db import get_storage, storage_config
 from api.nba_agent.ingestion_jobs import create_ingestion_job, get_ingestion_job, run_ingestion_job
 from api.nba_agent.openai_agent import openai_agent_config, run_openai_agent
 from api.nba_agent.responses_agent import run_responses_agent
+from api.nba_agent.storage import StorageError, storage_health
 from api.nba_agent.tools import find_recent_completed_games, find_recent_completed_games_for_resolution, get_box_score, get_cached_games_status
 
 
 router = APIRouter()
+
+
+@router.get("/api/health/storage")
+def health_storage() -> dict[str, str]:
+    try:
+        return storage_health(get_storage())
+    except (RuntimeError, StorageError) as exc:
+        raise HTTPException(status_code=503, detail="Storage is unavailable") from exc
 
 
 @router.get("/api/recent-games")

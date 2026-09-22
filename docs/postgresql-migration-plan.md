@@ -169,6 +169,8 @@ A fully functional PostgreSQL runtime backend rather than a configuration-only s
 
 ## Phase 5: Retention and Operations
 
+**Status:** Complete. See [`postgresql-phase-5-operations.md`](postgresql-phase-5-operations.md).
+
 Define production behavior for storage growth, security, reliability, and observability.
 
 ### Work
@@ -189,9 +191,9 @@ Documented and implemented operational policies, including raw-response retentio
 
 ### Exit Criteria
 
-- Retention can run safely and repeatedly.
-- Backup and restore expectations are documented.
-- Logs and metrics provide useful diagnosis without leaking sensitive information.
+- [x] Retention can run safely and repeatedly in bounded batches.
+- [x] Backup and restore expectations are documented.
+- [x] Health checks and operation logs provide diagnosis without leaking payloads or credentials.
 
 ## Phase 6: Verification and Parity Testing
 
