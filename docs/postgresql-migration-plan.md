@@ -71,6 +71,9 @@ A storage-operation inventory and a testable definition of existing behavior.
 
 ## Phase 2: PostgreSQL Schema and Migration Tooling
 
+**Status:** Complete. See [`postgresql-schema.md`](postgresql-schema.md),
+`alembic.ini`, and `migrations/versions/20260922_01_initial_postgresql_schema.py`.
+
 Create the canonical PostgreSQL schema and the tooling needed to manage it safely.
 
 ### Work
@@ -93,10 +96,10 @@ Reviewed, versioned PostgreSQL migrations that repeatedly initialize a valid emp
 
 ### Exit Criteria
 
-- A new database can be upgraded from zero to the latest schema automatically.
-- The resulting schema matches the documented domain model.
-- Constraints and indexes are covered by migration tests.
-- No application runtime path is switched to PostgreSQL yet.
+- [x] A new database can be upgraded from zero to the latest schema automatically.
+- [x] The resulting schema matches the documented domain model.
+- [x] Constraints and indexes are covered by migration tests.
+- [x] No application runtime path is switched to PostgreSQL yet.
 
 ## Phase 3: Storage Boundary
 
