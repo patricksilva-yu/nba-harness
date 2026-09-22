@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import duckdb
+from api.nba_agent.storage import DuckDBStorage, StorageBackend, StorageConnection
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,11 +29,27 @@ def storage_config() -> dict[str, str | None]:
     return {"backend": backend, "database_url": database_url, "local_path": str(DEFAULT_DB)}
 
 
-def connect(db_path: Path = DEFAULT_DB, read_only: bool = True) -> duckdb.DuckDBPyConnection:
-    return duckdb.connect(str(db_path), read_only=read_only)
+def get_storage(db_path: Path = DEFAULT_DB) -> StorageBackend:
+    """Return the configured storage adapter for a local application instance.
+
+    PostgreSQL is intentionally rejected until Phase 4 supplies its adapter;
+    accepting the setting while silently opening DuckDB would be unsafe.
+    """
+    backend = storage_config()["backend"]
+    if backend == "duckdb":
+        return DuckDBStorage(db_path)
+    raise RuntimeError("PostgreSQL storage is not implemented yet; complete Phase 4 before setting NBA_STORAGE_BACKEND=postgres")
 
 
-def create_schema(con: duckdb.DuckDBPyConnection) -> None:
+def connect(db_path: Path = DEFAULT_DB, read_only: bool = True) -> StorageConnection:
+    """Compatibility helper for tests and legacy scripts.
+
+    New application code must depend on :func:`get_storage` instead.
+    """
+    return get_storage(db_path).open(read_only=read_only)
+
+
+def create_schema(con: StorageConnection) -> None:
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_responses (
@@ -259,7 +275,4 @@ def create_schema(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def initialize_database(db_path: Path = DEFAULT_DB) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = connect(db_path, read_only=False)
-    create_schema(con)
-    con.close()
+    get_storage(db_path).initialize()

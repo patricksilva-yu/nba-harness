@@ -10,16 +10,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import duckdb
 from nba_api.stats.endpoints import boxscoreadvancedv3, boxscoretraditionalv3, gamerotation, leaguegamelog, playbyplayv3
 
-from api.nba_agent.db import DEFAULT_DB, create_schema
+from api.nba_agent.db import DEFAULT_DB, create_schema, get_storage
+from api.nba_agent.storage import StorageConnection
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def persist_raw_response(
-    con: duckdb.DuckDBPyConnection,
+    con: StorageConnection,
     *,
     endpoint: str,
     game_id: str | None,
@@ -145,7 +145,7 @@ def fetch_recent_completed_games(
         timeout=timeout,
     )
     if db_path is not None:
-        con = duckdb.connect(str(db_path))
+        con = get_storage(db_path).open(read_only=False)
         create_schema(con)
         persist_raw_response(
             con,
@@ -228,7 +228,7 @@ def import_official_advanced_team_box(
 ) -> dict[str, Any]:
     response = boxscoreadvancedv3.BoxScoreAdvancedV3(game_id=game_id, timeout=timeout)
     rows = response.get_data_frames()[1].to_dict(orient="records")
-    con = duckdb.connect(str(db_path))
+    con = get_storage(db_path).open(read_only=False)
     create_schema(con)
     team_abbr_by_id = {
         str(row[0]): row[1]
@@ -312,7 +312,7 @@ def import_official_game_and_team_box(
     team_response = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, timeout=timeout)
     team_rows = team_response.get_data_frames()[2].to_dict(orient="records")
     by_team_id = {str(row["teamId"]): row for row in team_rows}
-    con = duckdb.connect(str(db_path))
+    con = get_storage(db_path).open(read_only=False)
     create_schema(con)
     raw_response_id = persist_raw_response(
         con,
@@ -446,7 +446,7 @@ def import_official_player_box(
                 "source": "nba_api:BoxScoreTraditionalV3",
             }
         )
-    con = duckdb.connect(str(db_path))
+    con = get_storage(db_path).open(read_only=False)
     create_schema(con)
     raw_response_id = persist_raw_response(
         con,
@@ -576,7 +576,7 @@ def import_official_play_by_play(
 ) -> dict[str, Any]:
     response = playbyplayv3.PlayByPlayV3(game_id=game_id, timeout=timeout)
     frame = response.get_data_frames()[0]
-    con = duckdb.connect(str(db_path))
+    con = get_storage(db_path).open(read_only=False)
     create_schema(con)
     raw_response_id = persist_raw_response(
         con,
@@ -658,7 +658,7 @@ def import_official_game_rotation(
 ) -> dict[str, Any]:
     response = gamerotation.GameRotation(game_id=game_id, timeout=timeout)
     frames = response.get_data_frames()
-    con = duckdb.connect(str(db_path))
+    con = get_storage(db_path).open(read_only=False)
     create_schema(con)
     team_abbr_by_id = {
         str(row[0]): row[1]

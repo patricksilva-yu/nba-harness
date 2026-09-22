@@ -9,9 +9,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-import duckdb
-
-from api.nba_agent.db import DEFAULT_DB, create_schema
+from api.nba_agent.db import DEFAULT_DB, create_schema, get_storage
+from api.nba_agent.storage import StorageConnection
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -123,7 +122,7 @@ def parse_score(score: str | None) -> tuple[int | None, int | None]:
     return int(away), int(home)
 
 
-def create_legacy_seed_schema(con: duckdb.DuckDBPyConnection) -> None:
+def create_legacy_seed_schema(con: StorageConnection) -> None:
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS seed_player_game_logs AS
@@ -134,7 +133,7 @@ def create_legacy_seed_schema(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def import_game(sqlite_path: Path, con: duckdb.DuckDBPyConnection, game_id: str) -> None:
+def import_game(sqlite_path: Path, con: StorageConnection, game_id: str) -> None:
     src = sqlite3.connect(sqlite_path)
     src.row_factory = sqlite3.Row
     game = src.execute("SELECT * FROM game WHERE game_id = ?", [game_id]).fetchone()
@@ -254,7 +253,7 @@ def import_game(sqlite_path: Path, con: duckdb.DuckDBPyConnection, game_id: str)
     src.close()
 
 
-def import_seed_player_logs(con: duckdb.DuckDBPyConnection, csv_path: Path) -> int:
+def import_seed_player_logs(con: StorageConnection, csv_path: Path) -> int:
     con.execute("DELETE FROM seed_player_game_logs")
     con.execute(
         "INSERT INTO seed_player_game_logs SELECT * FROM read_csv_auto(?, header = true, ignore_errors = true)",
@@ -263,7 +262,7 @@ def import_seed_player_logs(con: duckdb.DuckDBPyConnection, csv_path: Path) -> i
     return con.execute("SELECT COUNT(*) FROM seed_player_game_logs").fetchone()[0]
 
 
-def import_player_box_from_seed(con: duckdb.DuckDBPyConnection, game_id: str) -> int:
+def import_player_box_from_seed(con: StorageConnection, game_id: str) -> int:
     con.execute("DELETE FROM box_scores_player WHERE game_id = ?", [game_id])
     con.execute(
         """
@@ -355,7 +354,7 @@ def main() -> int:
     args = parser.parse_args()
 
     args.db.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(args.db))
+    con = get_storage(args.db).open(read_only=False)
     create_schema(con)
     create_legacy_seed_schema(con)
     import_game(args.sqlite, con, args.game_id)

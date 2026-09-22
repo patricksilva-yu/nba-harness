@@ -102,6 +102,8 @@ Reviewed, versioned PostgreSQL migrations that repeatedly initialize a valid emp
 
 Remove database-specific concerns from application and domain logic.
 
+**Status:** Complete. See [`postgresql-phase-3-storage-boundary.md`](postgresql-phase-3-storage-boundary.md).
+
 ### Work
 
 - Introduce narrow storage interfaces or repositories, such as:

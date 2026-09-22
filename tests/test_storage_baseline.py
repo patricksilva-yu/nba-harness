@@ -1,9 +1,9 @@
 import json
 
-import duckdb
 import pytest
 
-from api.nba_agent.db import connect, create_schema, initialize_database, storage_config
+from api.nba_agent.db import connect, create_schema, get_storage, initialize_database, storage_config
+from api.nba_agent.storage import DuckDBStorage
 from api.nba_agent.ingestion_jobs import (
     create_ingestion_job,
     get_ingestion_job,
@@ -89,9 +89,7 @@ def test_initialize_database_is_idempotent(tmp_path):
     assert table_count == len(EXPECTED_PRIMARY_KEYS)
 
 
-def test_postgres_config_requires_url_but_does_not_change_runtime_connection(
-    monkeypatch, tmp_path
-):
+def test_postgres_config_requires_url_and_fails_fast_until_its_adapter_exists(monkeypatch, tmp_path):
     monkeypatch.setenv("NBA_STORAGE_BACKEND", "postgres")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
@@ -99,9 +97,20 @@ def test_postgres_config_requires_url_but_does_not_change_runtime_connection(
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/nba")
     assert storage_config()["backend"] == "postgres"
+    with pytest.raises(RuntimeError, match="PostgreSQL storage is not implemented"):
+        get_storage(tmp_path / "postgres_not_ready.duckdb")
 
-    con = connect(tmp_path / "still_duckdb.duckdb", read_only=False)
-    assert isinstance(con, duckdb.DuckDBPyConnection)
+
+def test_duckdb_storage_adapter_is_selected_for_the_local_backend(monkeypatch, tmp_path):
+    monkeypatch.setenv("NBA_STORAGE_BACKEND", "duckdb")
+    storage = get_storage(tmp_path / "local.duckdb")
+
+    assert isinstance(storage, DuckDBStorage)
+    storage.initialize()
+    con = storage.open()
+    assert con.execute("SELECT COUNT(*) FROM information_schema.tables").fetchone()[0] == len(
+        EXPECTED_PRIMARY_KEYS
+    )
     con.close()
 
 

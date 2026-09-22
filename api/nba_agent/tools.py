@@ -6,18 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import uuid
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
-from api.nba_agent.db import DEFAULT_DB, connect
+from api.nba_agent.db import DEFAULT_DB, get_storage
 from api.nba_agent.official_ingest import (
     fetch_recent_completed_games,
     import_official_game_bundle,
 )
+from api.nba_agent.storage import StorageConnection, StorageError
+from api.nba_agent.storage.repositories import AnalysisRunRepository, EvidenceRepository
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,33 +35,9 @@ def persist_evidence_packets(
     if not packets:
         return True
     try:
-        con = connect(db_path, read_only=False)
-        con.executemany(
-            """
-            INSERT OR REPLACE INTO evidence_packets (
-                packet_id, game_id, packet_type, claim_seed, source_provider,
-                source_detail, evidence_level, confidence, payload_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                [
-                    packet["packet_id"],
-                    game_id,
-                    packet.get("type"),
-                    packet.get("claim_seed"),
-                    packet.get("source", {}).get("provider"),
-                    packet.get("source", {}).get("detail") or packet.get("source", {}).get("endpoint"),
-                    packet.get("evidence_level"),
-                    packet.get("confidence"),
-                    json.dumps(packet, default=str),
-                ]
-                for packet in packets
-            ],
-        )
-        con.close()
+        EvidenceRepository(get_storage(db_path)).save_many(game_id, packets)
         return True
-    except duckdb.IOException:
+    except StorageError:
         return False
 
 
@@ -387,26 +362,16 @@ def persist_analysis_run(
     packet_ids: list[str],
     db_path: Path = DEFAULT_DB,
 ) -> str:
-    run_id = f"analysis_{game_id}_{uuid.uuid4().hex}"
-    con = connect(db_path, read_only=False)
-    con.execute(
-        """
-        INSERT INTO analysis_runs (
-            run_id, game_id, user_question, memo_markdown, packet_ids_json
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        [run_id, game_id, user_question, memo_markdown, json.dumps(packet_ids)],
+    return AnalysisRunRepository(get_storage(db_path)).create(
+        game_id, user_question, memo_markdown, packet_ids
     )
-    con.close()
-    return run_id
 
 
 def get_cached_games_status(
     db_path: Path = DEFAULT_DB,
     limit: int = 20,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     advanced_table_exists = con.execute(
         """
         SELECT COUNT(*)
@@ -469,7 +434,7 @@ def ensure_game_cached(
 ) -> dict[str, Any]:
     if not force_refresh:
         try:
-            con = connect(db_path)
+            con = get_storage(db_path).open()
             counts = con.execute(
                 """
                 SELECT COUNT(*)
@@ -511,7 +476,7 @@ def ensure_game_cached(
                     "ingested": False,
                     "warnings": [],
                 }
-        except duckdb.Error:
+        except StorageError:
             pass
 
     ingest_result = import_official_game_bundle(
@@ -552,7 +517,7 @@ def get_game_snapshot(
     db_path: Path = DEFAULT_DB,
     persist: bool = False,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     game = con.execute("SELECT * FROM games WHERE game_id = ?", [game_id]).fetchone()
     if not game:
         con.close()
@@ -631,7 +596,7 @@ def get_box_score(
     db_path: Path = DEFAULT_DB,
 ) -> dict[str, Any]:
     level = level.lower()
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     game = con.execute("SELECT game_id FROM games WHERE game_id = ?", [game_id]).fetchone()
     if not game:
         con.close()
@@ -706,7 +671,7 @@ def infer_lineup_stints_from_substitutions(
     game_id: str,
     db_path: Path = DEFAULT_DB,
 ) -> int:
-    con = connect(db_path, read_only=False)
+    con = get_storage(db_path).open(read_only=False)
     rows = con.execute(
         """
         SELECT eventnum, period, pctimestring, homedescription, visitordescription,
@@ -782,7 +747,7 @@ def get_lineup_stints(
     db_path: Path = DEFAULT_DB,
     persist: bool = False,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     game = con.execute("SELECT game_id FROM games WHERE game_id = ?", [game_id]).fetchone()
     if not game:
         con.close()
@@ -800,7 +765,7 @@ def get_lineup_stints(
     con.close()
     if count == 0:
         infer_lineup_stints_from_substitutions(game_id, db_path)
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     rows = con.execute(
         f"""
         SELECT stint_id, team_abbr, player_id, player_name, period, start_clock,
@@ -870,7 +835,7 @@ def get_lineup_stints(
     }, db_path, persist=persist)
 
 
-def scoring_events(con: duckdb.DuckDBPyConnection, game_id: str) -> list[dict[str, Any]]:
+def scoring_events(con: StorageConnection, game_id: str) -> list[dict[str, Any]]:
     rows = con.execute(
         """
         SELECT eventnum, period, pctimestring, homedescription, visitordescription,
@@ -893,7 +858,7 @@ def find_decisive_runs(
     max_events: int = 16,
     persist: bool = False,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     game = con.execute(
         "SELECT home_team_abbr, away_team_abbr, home_score, away_score FROM games WHERE game_id = ?",
         [game_id],
@@ -1040,7 +1005,7 @@ def get_possession_summary(
     db_path: Path = DEFAULT_DB,
     persist: bool = False,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     rows = con.execute(
         """
         SELECT
@@ -1100,7 +1065,7 @@ def get_advanced_game_context(
     db_path: Path = DEFAULT_DB,
     persist: bool = False,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     game = con.execute(
         "SELECT away_team_abbr, home_team_abbr FROM games WHERE game_id = ?",
         [game_id],
@@ -1300,7 +1265,7 @@ def get_player_game_context(
     db_path: Path = DEFAULT_DB,
     persist: bool = False,
 ) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     game = con.execute(
         "SELECT away_team_abbr, home_team_abbr FROM games WHERE game_id = ?",
         [game_id],
@@ -1400,7 +1365,7 @@ def get_player_game_context(
 
 
 def rehydrate_evidence_packet(packet_id_value: str, game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
-    con = connect(db_path)
+    con = get_storage(db_path).open()
     stored_packet = con.execute(
         """
         SELECT packet_id, packet_type, claim_seed, source_provider, source_detail,
