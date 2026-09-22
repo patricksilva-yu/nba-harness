@@ -234,6 +234,8 @@ Automated evidence that the database change did not silently alter application b
 
 ## Phase 7: Optional Historical Data Transfer
 
+**Status:** Complete. See [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
+
 This phase is optional because `nba-harness` intentionally begins without a copied DuckDB cache.
 
 ### Work

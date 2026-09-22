@@ -65,8 +65,9 @@ def test_initial_migration_creates_canonical_schema_and_downgrades_cleanly():
                 "lineup_stints",
                 "play_by_play_events",
                 "raw_responses",
+                "seed_player_game_logs",
             }
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_02"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_03"
 
             raw_columns = {column["name"]: column for column in inspector.get_columns("raw_responses")}
             evidence_columns = {column["name"]: column for column in inspector.get_columns("evidence_packets")}
