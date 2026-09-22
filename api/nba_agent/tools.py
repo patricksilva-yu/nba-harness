@@ -23,6 +23,11 @@ ROOT = Path(__file__).resolve().parents[2]
 GAME_RESOLUTION_SEASON_TYPES = ("Playoffs", "Regular Season")
 
 
+def decode_storage_json(value: Any) -> Any:
+    """Normalize JSON text from DuckDB and decoded JSONB from PostgreSQL."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
 def packet_id(*parts: object) -> str:
     return "_".join(str(part).replace(":", "").replace(" ", "-").lower() for part in parts)
 
@@ -726,13 +731,32 @@ def infer_lineup_stints_from_substitutions(
     if inferred_rows:
         con.executemany(
             """
-            INSERT OR REPLACE INTO lineup_stints (
+            INSERT INTO lineup_stints (
                 stint_id, game_id, team_abbr, team_id, player_id, player_name,
                 period, start_clock, end_clock, start_eventnum, end_eventnum,
                 start_elapsed_seconds, end_elapsed_seconds, duration_seconds,
                 player_pts, plus_minus, source, confidence, caveat
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (stint_id) DO UPDATE SET
+                game_id = EXCLUDED.game_id,
+                team_abbr = EXCLUDED.team_abbr,
+                team_id = EXCLUDED.team_id,
+                player_id = EXCLUDED.player_id,
+                player_name = EXCLUDED.player_name,
+                period = EXCLUDED.period,
+                start_clock = EXCLUDED.start_clock,
+                end_clock = EXCLUDED.end_clock,
+                start_eventnum = EXCLUDED.start_eventnum,
+                end_eventnum = EXCLUDED.end_eventnum,
+                start_elapsed_seconds = EXCLUDED.start_elapsed_seconds,
+                end_elapsed_seconds = EXCLUDED.end_elapsed_seconds,
+                duration_seconds = EXCLUDED.duration_seconds,
+                player_pts = EXCLUDED.player_pts,
+                plus_minus = EXCLUDED.plus_minus,
+                source = EXCLUDED.source,
+                confidence = EXCLUDED.confidence,
+                caveat = EXCLUDED.caveat
             """,
             inferred_rows,
         )
@@ -1378,7 +1402,7 @@ def rehydrate_evidence_packet(packet_id_value: str, game_id: str, db_path: Path 
     if stored_packet:
         cols = [d[0] for d in con.description]
         stored = dict(zip(cols, stored_packet))
-        stored["payload"] = json.loads(stored.pop("payload_json"))
+        stored["payload"] = decode_storage_json(stored.pop("payload_json"))
         con.close()
         return {
             "summary": {

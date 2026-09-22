@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from api.nba_agent.storage import DuckDBStorage, StorageBackend, StorageConnection
+from api.nba_agent.storage import DuckDBStorage, PostgresStorage, StorageBackend, StorageConnection
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,13 +32,15 @@ def storage_config() -> dict[str, str | None]:
 def get_storage(db_path: Path = DEFAULT_DB) -> StorageBackend:
     """Return the configured storage adapter for a local application instance.
 
-    PostgreSQL is intentionally rejected until Phase 4 supplies its adapter;
-    accepting the setting while silently opening DuckDB would be unsafe.
+    The selected adapter owns all driver construction. ``db_path`` is used only
+    by the local DuckDB adapter and intentionally ignored by PostgreSQL.
     """
     backend = storage_config()["backend"]
     if backend == "duckdb":
         return DuckDBStorage(db_path)
-    raise RuntimeError("PostgreSQL storage is not implemented yet; complete Phase 4 before setting NBA_STORAGE_BACKEND=postgres")
+    database_url = storage_config()["database_url"]
+    assert database_url is not None
+    return PostgresStorage(database_url)
 
 
 def connect(db_path: Path = DEFAULT_DB, read_only: bool = True) -> StorageConnection:
@@ -50,6 +52,12 @@ def connect(db_path: Path = DEFAULT_DB, read_only: bool = True) -> StorageConnec
 
 
 def create_schema(con: StorageConnection) -> None:
+    if getattr(con, "backend", "duckdb") == "postgres":
+        # PostgreSQL DDL is owned by Alembic, never application startup.
+        version = con.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
+        if version is None:
+            raise RuntimeError("PostgreSQL schema is not at an Alembic revision; run `alembic upgrade head`")
+        return
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_responses (

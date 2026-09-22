@@ -89,7 +89,7 @@ def test_initialize_database_is_idempotent(tmp_path):
     assert table_count == len(EXPECTED_PRIMARY_KEYS)
 
 
-def test_postgres_config_requires_url_and_fails_fast_until_its_adapter_exists(monkeypatch, tmp_path):
+def test_postgres_config_requires_url_and_selects_its_adapter(monkeypatch, tmp_path):
     monkeypatch.setenv("NBA_STORAGE_BACKEND", "postgres")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
@@ -97,8 +97,9 @@ def test_postgres_config_requires_url_and_fails_fast_until_its_adapter_exists(mo
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/nba")
     assert storage_config()["backend"] == "postgres"
-    with pytest.raises(RuntimeError, match="PostgreSQL storage is not implemented"):
-        get_storage(tmp_path / "postgres_not_ready.duckdb")
+    from api.nba_agent.storage import PostgresStorage
+
+    assert isinstance(get_storage(tmp_path / "postgres_not_ready.duckdb"), PostgresStorage)
 
 
 def test_duckdb_storage_adapter_is_selected_for_the_local_backend(monkeypatch, tmp_path):

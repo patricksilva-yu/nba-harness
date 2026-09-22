@@ -714,13 +714,32 @@ def import_official_game_rotation(
     if rows:
         con.executemany(
             """
-            INSERT OR REPLACE INTO lineup_stints (
+            INSERT INTO lineup_stints (
                 stint_id, game_id, team_abbr, team_id, player_id, player_name,
                 period, start_clock, end_clock, start_eventnum, end_eventnum,
                 start_elapsed_seconds, end_elapsed_seconds, duration_seconds,
                 player_pts, plus_minus, source, confidence, caveat
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (stint_id) DO UPDATE SET
+                game_id = EXCLUDED.game_id,
+                team_abbr = EXCLUDED.team_abbr,
+                team_id = EXCLUDED.team_id,
+                player_id = EXCLUDED.player_id,
+                player_name = EXCLUDED.player_name,
+                period = EXCLUDED.period,
+                start_clock = EXCLUDED.start_clock,
+                end_clock = EXCLUDED.end_clock,
+                start_eventnum = EXCLUDED.start_eventnum,
+                end_eventnum = EXCLUDED.end_eventnum,
+                start_elapsed_seconds = EXCLUDED.start_elapsed_seconds,
+                end_elapsed_seconds = EXCLUDED.end_elapsed_seconds,
+                duration_seconds = EXCLUDED.duration_seconds,
+                player_pts = EXCLUDED.player_pts,
+                plus_minus = EXCLUDED.plus_minus,
+                source = EXCLUDED.source,
+                confidence = EXCLUDED.confidence,
+                caveat = EXCLUDED.caveat
             """,
             rows,
         )

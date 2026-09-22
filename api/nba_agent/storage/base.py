@@ -14,6 +14,7 @@ class StorageConnection(Protocol):
     """Small common subset of the connection API used by the current query layer."""
 
     description: Any
+    backend: str
 
     def execute(self, query: str, parameters: Sequence[Any] | None = None) -> Any: ...
 
@@ -26,6 +27,7 @@ class StorageBackend(Protocol):
     """Adapter selected by configuration for one application process."""
 
     path: Path | None
+    backend: str
 
     def open(self, *, read_only: bool = True) -> StorageConnection: ...
 

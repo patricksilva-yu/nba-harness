@@ -17,6 +17,8 @@ from api.nba_agent.storage.base import StorageConnection, StorageError
 class DuckDBConnection:
     """Translate driver failures while preserving the current query API."""
 
+    backend = "duckdb"
+
     def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
         self._connection = connection
 
@@ -44,6 +46,8 @@ class DuckDBConnection:
 
 class DuckDBStorage:
     """Local-file storage adapter used until PostgreSQL is implemented."""
+
+    backend = "duckdb"
 
     def __init__(self, path: Path) -> None:
         self.path = path

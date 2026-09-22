@@ -13,6 +13,11 @@ from typing import Any
 from api.nba_agent.storage.base import StorageBackend
 
 
+def decode_json(value: Any) -> Any:
+    """Normalize DuckDB text and psycopg2 JSONB return values."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
 class EvidenceRepository:
     def __init__(self, storage: StorageBackend) -> None:
         self._storage = storage
@@ -24,11 +29,20 @@ class EvidenceRepository:
         try:
             connection.executemany(
                 """
-                INSERT OR REPLACE INTO evidence_packets (
+                INSERT INTO evidence_packets (
                     packet_id, game_id, packet_type, claim_seed, source_provider,
                     source_detail, evidence_level, confidence, payload_json
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (packet_id) DO UPDATE SET
+                    game_id = EXCLUDED.game_id,
+                    packet_type = EXCLUDED.packet_type,
+                    claim_seed = EXCLUDED.claim_seed,
+                    source_provider = EXCLUDED.source_provider,
+                    source_detail = EXCLUDED.source_detail,
+                    evidence_level = EXCLUDED.evidence_level,
+                    confidence = EXCLUDED.confidence,
+                    payload_json = EXCLUDED.payload_json
                 """,
                 [
                     [
@@ -99,6 +113,23 @@ class IngestionJobRepository:
         finally:
             connection.close()
 
+    def claim(self, job_id: str) -> bool:
+        """Atomically transition a queued job to fetching exactly once."""
+        connection = self._storage.open(read_only=False)
+        try:
+            claimed = connection.execute(
+                """
+                UPDATE ingestion_jobs
+                SET status = 'fetching', updated_at = current_timestamp
+                WHERE job_id = ? AND status = 'queued'
+                RETURNING job_id
+                """,
+                [job_id],
+            ).fetchone()
+            return claimed is not None
+        finally:
+            connection.close()
+
     def get(self, job_id: str) -> dict[str, Any] | None:
         connection = self._storage.open()
         try:
@@ -115,7 +146,7 @@ class IngestionJobRepository:
             "game_id": row[1],
             "status": row[2],
             "error": row[3],
-            "result": json.loads(row[4]) if row[4] else None,
+            "result": decode_json(row[4]) if row[4] is not None else None,
             "created_at": row[5],
             "updated_at": row[6],
         }

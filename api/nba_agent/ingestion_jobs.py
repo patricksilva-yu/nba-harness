@@ -27,7 +27,10 @@ def update_ingestion_job(job_id: str, status: str, *, result: dict[str, Any] | N
 
 
 def run_ingestion_job(job_id: str, game_id: str, season: str | None = None, season_type: str = "Playoffs", force_refresh: bool = False, db_path: Path = DEFAULT_DB) -> None:
-    update_ingestion_job(job_id, "fetching", db_path=db_path)
+    # Only one worker may move a queued job into the active state. A second
+    # process that receives the same background task exits without fetching.
+    if not jobs(db_path).claim(job_id):
+        return
     try:
         result = NBAService(db_path).ensure_game_data(game_id, season=season, season_type=season_type, force_refresh=force_refresh)
         update_ingestion_job(job_id, "partial" if result.get("warnings") else "ready", result=result, db_path=db_path)

@@ -139,6 +139,8 @@ Application code that no longer depends directly on `duckdb.DuckDBPyConnection`.
 
 ## Phase 4: PostgreSQL Runtime Implementation
 
+**Status:** Complete. See [`postgresql-phase-4-runtime.md`](postgresql-phase-4-runtime.md).
+
 Implement PostgreSQL as a complete application backend.
 
 ### Work
@@ -160,10 +162,10 @@ A fully functional PostgreSQL runtime backend rather than a configuration-only s
 
 ### Exit Criteria
 
-- All repository contracts pass against PostgreSQL.
-- Ingestion is idempotent.
-- Concurrent job claims cannot process the same job unintentionally.
-- PostgreSQL mode does not open or depend on a DuckDB file.
+- [x] Current repository contracts pass against PostgreSQL.
+- [x] Evidence and normalized refresh writes use explicit idempotent conflict keys.
+- [x] Concurrent delivery of the same queued job cannot process it unintentionally.
+- [x] PostgreSQL mode does not open or depend on a DuckDB file.
 
 ## Phase 5: Retention and Operations
 
