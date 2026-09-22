@@ -45,7 +45,8 @@ Same seeded records
 → PostgreSQL-mode API response
 ```
 
-Historical DuckDB transfer is intentionally out of scope because the project
-starts with a clean PostgreSQL cache. Live upstream ingestion is covered by its
-existing unit behavior; operational smoke tests against the NBA provider remain
-a deployment responsibility.
+This phase deliberately did not use the live NBA provider. Historical DuckDB
+transfer was subsequently completed and recorded in
+[`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
+Operational smoke tests against the NBA provider remain a deployment
+responsibility.

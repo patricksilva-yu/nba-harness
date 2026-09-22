@@ -1,4 +1,12 @@
-# NBA Analyst MCP Repository Migration Handoff
+# NBA Analyst MCP Repository Migration Handoff (Completed Archive)
+
+> **Status: completed on 2026-09-21.** This document is the historical runbook
+> for moving `/Users/patrick/Developer/nba` into this clean repository. It is
+> retained for provenance, not as current operating guidance. The move's source
+> commit and exclusions are recorded in
+> [`MIGRATION-PROVENANCE.md`](MIGRATION-PROVENANCE.md). For current storage and
+> deployment work, use [`postgresql-migration-plan.md`](postgresql-migration-plan.md)
+> and the phase records instead.
 
 ## Mission
 
@@ -180,7 +188,7 @@ The current DuckDB schema includes:
 - `analysis_runs`
 - `ingestion_jobs`
 
-## Environment Contract
+## Historical Environment Contract
 
 Create a local `.env` from `.env.example`; do not copy the old `.env`.
 
@@ -200,7 +208,7 @@ Important behavior:
 - `responses_tools` is the preferred model-backed mode and requires `OPENAI_API_KEY`.
 - `local_agents_sdk_mcp` is a legacy compatibility mode.
 - `remote_responses_mcp` is only a scaffold and is not wired.
-- `NBA_STORAGE_BACKEND=postgres` currently validates that `DATABASE_URL` exists, but the application data layer still opens DuckDB. Do not claim PostgreSQL runtime support until the repository has an actual PostgreSQL implementation and tests.
+- At the time of this handoff, PostgreSQL runtime support had not been implemented. This statement is superseded: PostgreSQL runtime support, migrations, parity tests, and the historical transfer are complete. See `docs/postgresql-phase-4-runtime.md` through `docs/postgresql-phase-7-historical-transfer.md`.
 
 Frontend local configuration:
 
@@ -291,7 +299,7 @@ The repository does not yet fully implement the capstone definition of done. Mig
 - Claim verification and adaptive investigation are not yet implemented as the two complete, inspectable loops required by the scope.
 - The evaluation fixture is a useful start, but the planned three-configuration comparison, held-out set, repeatability runs, manual review, and reporting are incomplete.
 - The UI has analysis functionality but does not yet constitute all three finished Analysis, Investigation, and Evaluation views.
-- PostgreSQL application storage is not implemented end to end. A migration utility alone does not satisfy this requirement.
+- PostgreSQL application storage is now implemented end to end; schema migrations, runtime selection, operations, verification, and the historical transfer are recorded in the PostgreSQL phase documents.
 - Azure infrastructure, secret management, monitoring, database provisioning, and deployment workflow are not complete.
 - Background ingestion uses FastAPI in-process background tasks and local persisted job state; it is not yet a durable distributed job system.
 - The remote MCP Responses mode is not wired.

@@ -5,6 +5,14 @@ target schema rather than a copy of DuckDB DDL: structured documents are
 `JSONB`, operational timestamps are `TIMESTAMPTZ`, and relationships and
 state constraints are enforced by PostgreSQL.
 
+The canonical application schema comprises the ten operational tables defined
+by revision `20260922_01`. Revision `20260922_03` additionally creates
+`seed_player_game_logs` solely to preserve the legacy historical dataset. It
+has no stable primary key in the source and is not part of the normal
+application write path; see
+[`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md)
+before attempting any rerun or cleanup.
+
 ## Relationships and deletion policy
 
 `games` is the parent of normalized game data. Its box scores, play-by-play,

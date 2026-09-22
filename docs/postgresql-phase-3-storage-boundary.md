@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 is complete. The application now obtains storage through a backend-neutral contract. DuckDB remains the only implemented adapter until Phase 4 adds PostgreSQL.
+Phase 3 is complete. The application now obtains storage through a backend-neutral contract. This is a point-in-time record: Phase 4 subsequently added the PostgreSQL adapter and Phase 7 transferred the historical cache. See [`postgresql-phase-4-runtime.md`](postgresql-phase-4-runtime.md) and [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md) for the current state.
 
 ## What Changed
 
@@ -18,7 +18,7 @@ api/nba_agent/storage/
 
 `api/nba_agent/db.py` now owns adapter selection through `get_storage`. It returns `DuckDBStorage` when `NBA_STORAGE_BACKEND=duckdb`.
 
-When `NBA_STORAGE_BACKEND=postgres`, the application fails fast with an explicit error until the PostgreSQL adapter is implemented. It no longer accepts PostgreSQL configuration and silently opens a DuckDB file.
+At the end of this phase, `NBA_STORAGE_BACKEND=postgres` failed fast until the PostgreSQL adapter existed. It no longer accepted PostgreSQL configuration and silently opened a DuckDB file.
 
 ## Boundary Rules
 
@@ -30,7 +30,7 @@ When `NBA_STORAGE_BACKEND=postgres`, the application fails fast with an explicit
 - `tools.py` delegates evidence and analysis-run persistence to repositories.
 - Official ingestion and legacy bootstrap use the selected adapter rather than constructing driver connections themselves.
 
-## Current Runtime Shape
+## Runtime Shape at Phase 3 Completion
 
 ```text
 FastAPI routes / agents / service
@@ -46,7 +46,7 @@ FastAPI routes / agents / service
              DuckDB file
 ```
 
-The storage contract is deliberately small during the transition. The analytical tools retain their existing SQL queries, but no longer choose a driver, construct a connection, or depend on a DuckDB type. Phase 4 will add the PostgreSQL adapter; follow-on repository extraction can then move dialect-specific analytical queries out of tools incrementally.
+The storage contract was deliberately small during the transition. The analytical tools retained their existing SQL queries, but no longer chose a driver, constructed a connection, or depended on a DuckDB type. Phase 4 added the PostgreSQL adapter; follow-on repository extraction can move dialect-specific analytical queries out of tools incrementally.
 
 ## Compatibility Behavior Preserved
 
@@ -87,7 +87,7 @@ pytest -q
 - [x] Existing behavior is protected by tests.
 - [x] The full test suite passes.
 
-## Deferred to Phase 4
+## Completed in Later Phases
 
 - PostgreSQL connection pooling and transaction management.
 - PostgreSQL SQL adaptation and upsert semantics.

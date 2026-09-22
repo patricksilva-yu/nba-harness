@@ -14,7 +14,7 @@ This is a controlled backend replacement, not only a table-copy exercise. Postgr
 - Ingestion must be idempotent and safe under concurrency.
 - Database operations must use explicit transaction boundaries, parameterized SQL, bounded timeouts, and connection pooling.
 - PostgreSQL and DuckDB implementations must satisfy the same behavioral contracts during the transition.
-- Historical DuckDB data transfer is optional because the new repository begins without a copied cache.
+- Historical DuckDB data transfer was completed on 2026-09-22; its validation record is retained as a migration artifact.
 - The `raw_responses` table will initially be retained with an explicit retention policy.
 - Cutover will occur only after automated behavior, integration, and data-parity checks pass.
 
@@ -32,6 +32,11 @@ The storage migration covers these logical tables:
 8. `evidence_packets`
 9. `analysis_runs`
 10. `ingestion_jobs`
+
+The completed historical transfer also preserves `seed_player_game_logs` as a
+legacy table outside this canonical operational set. Its special rerun and
+deduplication constraints are documented in
+[`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
 
 It also covers every application path that currently creates, reads, updates, or passes a DuckDB connection, particularly:
 
@@ -232,11 +237,11 @@ Automated evidence that the database change did not silently alter application b
 - [x] Known intentional differences (DuckDB local setup versus PostgreSQL migrations) are documented.
 - [x] Selected cache and evidence behavior meets the defined equivalence standard.
 
-## Phase 7: Optional Historical Data Transfer
+## Phase 7: Historical Data Transfer
 
 **Status:** Complete. See [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
 
-This phase is optional because `nba-harness` intentionally begins without a copied DuckDB cache.
+Completed on 2026-09-22. The legacy DuckDB cache was copied into the configured PostgreSQL database after an immutable backup was made. See [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md) for counts, provenance, and rerun safety.
 
 ### Work
 
@@ -257,10 +262,10 @@ Repeatable data-transfer tooling and a validation report.
 
 ### Exit Criteria
 
-- Every selected source record is accounted for.
-- No duplicate keys or unexpected nulls were introduced.
-- Representative game analyses behave equivalently.
-- The original DuckDB backup remains available during the rollback window.
+- [x] Every selected source record is accounted for.
+- [x] No duplicate keys or unexpected nulls were introduced.
+- [x] Representative PostgreSQL reads were verified after transfer.
+- [x] The original DuckDB backup remains available during the rollback window.
 
 ## Phase 8: Cutover and Rollback
 
@@ -271,7 +276,7 @@ Switch production to PostgreSQL only after all required checks pass.
 ```text
 Provision PostgreSQL
 → apply schema migrations
-→ optionally backfill historical data
+→ transfer validated historical data
 → deploy PostgreSQL-capable application code
 → run smoke and parity checks
 → set NBA_STORAGE_BACKEND=postgres
@@ -310,12 +315,12 @@ The work should be delivered in independently reviewable increments:
 5. Ingestion and job-concurrency conversion.
 6. Tools, evidence, and analysis-run conversion.
 7. Integration, concurrency, and parity tests.
-8. Optional historical backfill utility.
+8. Historical backfill utility and validation report.
 9. Operations documentation, retention job, deployment configuration, and cutover checklist.
 
-## Initial Data Decision
+## Historical Data Decision
 
-The default plan is to initialize PostgreSQL without historical data and allow ask-driven ingestion to populate it. Historical transfer from `/Users/patrick/Developer/nba/data/nba_agent.duckdb` will occur only if preserving the old local cache is explicitly requested.
+The initial PostgreSQL database was created empty, then the complete legacy cache from `/Users/patrick/Developer/nba/data/nba_agent.duckdb` was transferred after explicit approval. The target contains every selected legacy table, including `seed_player_game_logs`; the source backup remains private and outside Git. Do not rerun the seed-log transfer without a deduplication plan.
 
 ## Definition of Done
 

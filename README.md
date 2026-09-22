@@ -1,6 +1,6 @@
 # NBA Analyst Agent
 
-Evidence-first NBA postgame analysis app with a shared domain service, direct OpenAI Responses tools, an optional FastMCP adapter, and a DuckDB local data store.
+Evidence-first NBA postgame analysis app with a shared domain service, direct OpenAI Responses tools, an optional FastMCP adapter, and a PostgreSQL runtime datastore.
 
 ## Current Shape
 
@@ -10,8 +10,10 @@ Evidence-first NBA postgame analysis app with a shared domain service, direct Op
 - `api/nba_agent/mcp_server.py` is an optional interoperability adapter over the same service.
 - `frontend/` contains the standalone React UI served by Vite.
 - `prompts/` contains the editable OpenAI analyst prompt.
-- `data/nba_agent.duckdb` is the local ask-driven data store for fetched game data, evidence packets, and analysis history.
-- `docs/` contains the design doc and Excalidraw architecture diagram.
+- `api/nba_agent/storage/` contains the storage contract plus DuckDB and PostgreSQL adapters.
+- PostgreSQL is the active configured backend for this repository; the migrated historical cache is in the configured PostgreSQL database.
+- `data/nba_agent.duckdb` is an ignored legacy/local rollback artifact, not the active datastore when PostgreSQL mode is configured.
+- `docs/` contains the architecture, capstone scope, storage migration records, and operational guidance.
 - `tests/` contains the regression tests for the current PoC workflow.
 
 ## Run Locally
@@ -56,9 +58,9 @@ The MCP server exposes the same four preferred tools and retains the old granula
 
 Cache misses can be run outside an analysis request through `POST /api/ingestion-jobs`. Poll `GET /api/ingestion-jobs/{job_id}` for `queued`, `fetching`, `ready`, `partial`, or `failed`.
 
-## Local Data Store Model
+## Data Store Model
 
-There is no scheduled ETL. A game is fetched only when the user asks about it and DuckDB is missing required rows.
+There is no scheduled ETL. A game is fetched only when the user asks about it and the active storage backend is missing required rows.
 
 `games_ensure_game_cached` is the internal tool name. Conceptually, it ensures the local data store has:
 
@@ -68,7 +70,16 @@ There is no scheduled ETL. A game is fetched only when the user asks about it an
 - play-by-play rows
 - two advanced team rows
 
-DuckDB is the supported local mode. Set `NBA_STORAGE_BACKEND=postgres` with `DATABASE_URL` only after applying the PostgreSQL migration for a multi-user deployment; the application rejects an implicit PostgreSQL configuration.
+PostgreSQL mode requires both `NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL`; the schema must be at the Alembic head before the API starts. The repository's local `.env` is configured this way. DuckDB remains available only as a temporary development/rollback adapter while deployment cutover is pending; it is not opened in PostgreSQL mode.
+
+For a fresh PostgreSQL database, run:
+
+```bash
+source .venv/bin/activate
+alembic upgrade head
+```
+
+Use the disposable DuckDB or PostgreSQL test configuration only for tests; never commit `.env` or connection strings.
 
 ## Test
 

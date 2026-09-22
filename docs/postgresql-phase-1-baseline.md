@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 is complete. This document records the storage behavior that must be preserved or deliberately changed during the PostgreSQL migration. It is a description of the current DuckDB implementation, not the target PostgreSQL design.
+Phase 1 is complete. This document records the storage behavior that had to be preserved or deliberately changed during the PostgreSQL migration. It is a point-in-time description of the DuckDB implementation, not the target PostgreSQL design. It is superseded as a current-state reference by [`postgresql-phase-4-runtime.md`](postgresql-phase-4-runtime.md) through [`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
 
 The baseline was produced from the migrated working tree on 2026-09-21 at commit `90b5648`, plus the uncommitted migration-planning documents.
 
@@ -22,7 +22,7 @@ The most important behavioral findings are:
 - The schema has primary keys but no foreign keys, check constraints, secondary indexes, or broadly applied `NOT NULL` constraints.
 - Local background jobs are persisted, but job claiming is not atomic and is not safe for multiple workers or API instances.
 
-These facts define the starting point for Phase 2 and the later repository abstraction.
+These facts defined the starting point for Phase 2 and the later repository abstraction.
 
 ## Storage Entry Points and Coupling
 
@@ -227,5 +227,4 @@ These tests intentionally describe the current implementation. Later phases may 
 - [x] Current transaction, refresh, idempotency, error, and concurrency behavior is documented.
 - [x] Table keys, types, relationships, and missing constraints are documented.
 - [x] Existing coverage and missing coverage are identified.
-- [x] Characterization tests protect the critical current behavior needed before Phase 2.
-
+- [x] Characterization tests protected the critical behavior needed before Phase 2.

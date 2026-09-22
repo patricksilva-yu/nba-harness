@@ -19,12 +19,15 @@ The NBA domain service is the center of the application. HTTP, OpenAI Responses 
 - `responses_agent.py`: model orchestration and structured output.
 - `mcp_server.py`: optional interoperability interface.
 - `routes.py`: HTTP transport.
-- `ingestion_jobs.py`: local background ingestion state.
-- `db.py`: local DuckDB schema and explicit storage configuration.
+- `ingestion_jobs.py`: persisted background-ingestion job state.
+- `db.py`: explicit storage selection and compatibility helpers.
+- `storage/`: backend-neutral storage contract, repositories, and DuckDB/PostgreSQL adapters.
 
 ## Storage
 
-DuckDB remains the supported local analytical store. A shared deployed service should use PostgreSQL after completing the existing migration path. Setting the PostgreSQL backend without a database URL is an error; the application must never silently share a local DuckDB file in multi-user mode.
+PostgreSQL is the active configured datastore. The API selects it only when both `NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL` are set, and startup verifies that Alembic has initialized the schema. The application never silently falls back to DuckDB in PostgreSQL mode.
+
+DuckDB remains a temporary local-development and rollback adapter during the deployment cutover window. It is not a dependency of the PostgreSQL runtime path. See [the migration plan](postgresql-migration-plan.md) for cutover status and [the historical-transfer record](postgresql-phase-7-historical-transfer.md) for the completed cache transfer.
 
 ## Evaluation
 

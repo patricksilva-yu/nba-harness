@@ -55,9 +55,9 @@ Stop and remove the disposable service with:
 docker compose down
 ```
 
-## Verification
+## Local verification
 
-Before Phase 2 implementation begins, verify:
+Verify the Python environment and local test suite with:
 
 ```bash
 source .venv/bin/activate
@@ -85,3 +85,19 @@ downgrades it. Run it together with the suite using:
 ```bash
 POSTGRES_TEST_DATABASE_URL=postgresql://nba_test:nba_test_local_only@127.0.0.1:55432/nba_test pytest -q
 ```
+
+## Active local application database
+
+The active local API uses PostgreSQL when the ignored `.env` sets
+`NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL`. Apply migrations before
+starting against a fresh database:
+
+```bash
+source .venv/bin/activate
+alembic upgrade head
+```
+
+Do not use the disposable test URL for the active application, and do not put
+the active connection string in committed files. The current hosted database
+and historical transfer are documented in
+[`postgresql-phase-7-historical-transfer.md`](postgresql-phase-7-historical-transfer.md).
