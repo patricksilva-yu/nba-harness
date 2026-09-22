@@ -1,39 +1,33 @@
-# Repository Guide for Agents
+# Repository Instructions
 
-## Current State
+## Project layout
 
-- The clean-repository migration is complete; its provenance is in
-  `docs/MIGRATION-PROVENANCE.md`. Do not modify `/Users/patrick/Developer/nba`
-  as part of normal work.
-- PostgreSQL is the active configured datastore. The historical DuckDB cache
-  was transferred on 2026-09-22; see
-  `docs/postgresql-phase-7-historical-transfer.md`.
-- DuckDB is a temporary development and rollback adapter only. Do not add new
-  production dependencies on a DuckDB file.
-- Azure deployment/cutover is intentionally pending. Do not deploy or change
-  cloud resources without explicit user authorization.
+- `api/` contains the FastAPI application and NBA domain logic.
+- `api/nba_agent/storage/` owns storage adapters and repositories; callers use
+  the storage boundary rather than driver-specific connections.
+- `frontend/` is the Vite/React client.
+- `migrations/` is the source of truth for PostgreSQL schema changes.
+- `docs/` contains architecture, operational guidance, and historical phase
+  records. Consult the relevant document instead of duplicating changing
+  project status in this file.
 
-## Working Rules
+## Engineering rules
 
-- Keep secrets in ignored `.env` files. Runtime PostgreSQL configuration uses
-  `NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL`; never print connection
-  strings.
-- Activate the project environment with `source .venv/bin/activate`. Do not
-  introduce Conda.
-- Apply schema changes through Alembic and test them against the disposable
-  PostgreSQL service; application startup must not own PostgreSQL DDL.
-- Preserve the storage boundary in `api/nba_agent/storage/`. New application
-  code must not construct DuckDB or psycopg connections directly.
-- Use `pytest -q` for the standard suite. For PostgreSQL integration coverage,
-  start `docker compose up -d postgres-test` and supply the explicit test URL
-  documented in `docs/postgresql-development.md`.
+- Keep secrets, database URLs, and runtime data in ignored environment or data
+  files; never print or commit them.
+- Use `source .venv/bin/activate` for Python work. Do not introduce Conda.
+- Add or change PostgreSQL schema only through Alembic migrations. Application
+  startup must not create or alter PostgreSQL schema.
+- Preserve parameterized queries, explicit transactions, and the storage
+  boundary when changing persistence behavior.
+- Update user-facing or operational documentation when behavior, configuration,
+  or deployment requirements change. Preserve historical phase documents; add
+  a short supersession note instead of rewriting their point-in-time record.
 
-## Documentation Map
+## Verification
 
-- `README.md`: current application setup and runtime model.
-- `docs/architecture-v2.md`: current application boundaries.
-- `docs/postgresql-migration-plan.md`: migration status; Phase 8 is next.
-- `docs/postgresql-phase-*.md`: point-in-time phase records; append a
-  supersession note rather than rewriting their historical assertions.
-- `docs/capstone-scope.md`: forward-looking course scope, not a statement that
-  every listed feature exists today.
+- Run `pytest -q` for Python changes when practical.
+- For PostgreSQL integration coverage, use the disposable `postgres-test`
+  service and explicit test URL documented in `docs/postgresql-development.md`.
+- For frontend changes, run `npm run build` from `frontend/`.
+- Report checks run and any checks intentionally not run.
