@@ -2,12 +2,14 @@
 .env
 .env.*
 !.env.example
+!.env.test.example
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
 
 # Python
 .venv/
+.tools/
 __pycache__/
 *.py[cod]
 .pytest_cache/

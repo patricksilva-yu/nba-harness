@@ -1,4 +1,5 @@
 duckdb==1.5.2
+alembic>=1.13.0,<2.0.0
 fastmcp==3.3.1
 fastapi>=0.115.0,<1.0.0
 mcp==1.27.1
@@ -7,6 +8,6 @@ openai>=2.0.0,<3.0.0
 openai-agents>=0.14.0,<1.0.0
 psycopg2-binary==2.9.9
 python-dotenv>=1.1.0,<2.0.0
-pandas==2.1.4
+pandas>=2.2.0,<3.0.0
 pytest>=8.0.0,<9.0.0
 SQLAlchemy==2.0.23
