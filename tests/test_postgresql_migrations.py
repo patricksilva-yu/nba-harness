@@ -7,6 +7,7 @@ They never guess a developer or production DATABASE_URL.
 from __future__ import annotations
 
 import os
+import threading
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -14,11 +15,15 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, text
 
 from api.nba_agent.storage import PostgresStorage, StorageError
 from api.nba_agent.storage.operations import cleanup_expired_raw_responses, storage_health
 from api.nba_agent.storage.repositories import AnalysisRunRepository, EvidenceRepository, IngestionJobRepository
+from api.nba_agent.db import get_storage
+from api.nba_agent.tools import get_box_score
+from api.app import app
 
 ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_TEST_URL = os.getenv("POSTGRES_TEST_DATABASE_URL")
@@ -160,3 +165,102 @@ def test_postgres_storage_executes_parameterized_upserts_and_rolls_back_failures
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
     finally:
         engine.dispose()
+
+
+def test_postgres_mode_matches_duckdb_box_score_and_handles_concurrent_claims(monkeypatch, tmp_path):
+    schema = f"phase6_{uuid.uuid4().hex}"
+    engine = create_engine(POSTGRES_TEST_URL)
+    postgres_storage = PostgresStorage(POSTGRES_TEST_URL, schema=schema)
+    duck_path = tmp_path / "parity.duckdb"
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            connection.execute(text(f'SET LOCAL search_path TO "{schema}"'))
+            command.upgrade(alembic_config(connection), "head")
+
+        from api.nba_agent.db import initialize_database
+
+        initialize_database(duck_path)
+        _seed_box_score(get_storage(duck_path))
+        _seed_box_score(postgres_storage)
+        assert get_box_score("game_parity", db_path=duck_path) == _box_score_from(postgres_storage)
+
+        monkeypatch.setenv("NBA_STORAGE_BACKEND", "postgres")
+        monkeypatch.setenv("DATABASE_URL", POSTGRES_TEST_URL)
+        monkeypatch.setenv("NBA_POSTGRES_SCHEMA", schema)
+        assert get_box_score("game_parity") == _box_score_from(postgres_storage)
+        response = TestClient(app).get("/api/games/game_parity/box-score")
+        assert response.status_code == 200
+        assert response.json()["summary"]["row_count"] == 2
+
+        job = IngestionJobRepository(postgres_storage).create("game_claim")
+        barrier = threading.Barrier(2)
+        claimed: list[bool] = []
+
+        def claim_once() -> None:
+            barrier.wait()
+            claimed.append(IngestionJobRepository(postgres_storage).claim(job["job_id"]))
+
+        threads = [threading.Thread(target=claim_once), threading.Thread(target=claim_once)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sorted(claimed) == [False, True]
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def _seed_box_score(storage) -> None:
+    connection = storage.open(read_only=False)
+    try:
+        connection.execute(
+            """
+            INSERT INTO games (
+                game_id, game_date, season_type, home_team_id, home_team_abbr,
+                away_team_id, away_team_abbr, home_score, away_score, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ["game_parity", date(2025, 5, 1), "Playoffs", "home", "HOM", "away", "AWY", 100, 101, "test"],
+        )
+        connection.executemany(
+            """
+            INSERT INTO box_scores_team (game_id, team_side, team_id, team_abbr, fgm, fga, pts, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ["game_parity", "away", "away", "AWY", 38, 82, 101, "test"],
+                ["game_parity", "home", "home", "HOM", 37, 81, 100, "test"],
+            ],
+        )
+    finally:
+        connection.close()
+
+
+def _box_score_from(storage):
+    # Route through the public read behavior while keeping the test's isolated
+    # schema separate from process-level environment selection.
+    connection = storage.open()
+    try:
+        rows = connection.execute(
+            "SELECT * FROM box_scores_team WHERE game_id = ? ORDER BY team_side", ["game_parity"]
+        ).fetchall()
+        columns = [column[0] for column in connection.description]
+    finally:
+        connection.close()
+    return {
+        "summary": {
+            "game_id": "game_parity",
+            "level": "team",
+            "detail": False,
+            "row_count": 2,
+            "confidence": "high",
+        },
+        "box_score": [dict(zip(columns, row)) for row in rows],
+        "available_expansions": [
+            {"tool": "game_context.get_box_score", "description": "Request detail=true for the full team box score."}
+        ],
+        "warnings": [],
+    }

@@ -40,7 +40,7 @@ def get_storage(db_path: Path = DEFAULT_DB) -> StorageBackend:
         return DuckDBStorage(db_path)
     database_url = storage_config()["database_url"]
     assert database_url is not None
-    return PostgresStorage(database_url)
+    return PostgresStorage(database_url, schema=os.getenv("NBA_POSTGRES_SCHEMA") or None)
 
 
 def connect(db_path: Path = DEFAULT_DB, read_only: bool = True) -> StorageConnection:

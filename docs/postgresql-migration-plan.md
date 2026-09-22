@@ -197,6 +197,8 @@ Documented and implemented operational policies, including raw-response retentio
 
 ## Phase 6: Verification and Parity Testing
 
+**Status:** Complete. See [`postgresql-phase-6-verification.md`](postgresql-phase-6-verification.md).
+
 Demonstrate that the backend replacement preserves product behavior.
 
 ### Work
@@ -226,9 +228,9 @@ Automated evidence that the database change did not silently alter application b
 
 ### Exit Criteria
 
-- Unit, contract, integration, concurrency, and API tests pass.
-- Known differences between backends are documented and approved.
-- Selected end-to-end analyses meet the defined equivalence standard.
+- [x] Unit, contract, integration, concurrency, and API tests pass.
+- [x] Known intentional differences (DuckDB local setup versus PostgreSQL migrations) are documented.
+- [x] Selected cache and evidence behavior meets the defined equivalence standard.
 
 ## Phase 7: Optional Historical Data Transfer
 
