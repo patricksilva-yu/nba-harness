@@ -1,5 +1,10 @@
 # NBA Analyst Architecture V2
 
+> **Superseded on 2026-09-23 by [Architecture V3](architecture-v3.md).**
+> V2 records the direct-function prototype and is retained as a historical
+> design artifact. It is not the target architecture for the capstone because
+> it made MCP optional on the primary agent execution path.
+
 ## Decision
 
 The NBA domain service is the center of the application. HTTP, OpenAI Responses function tools, and MCP are adapters over that service. MCP is no longer an internal transport requirement.

@@ -1,13 +1,28 @@
 # NBA Analyst Agent
 
-Evidence-first NBA postgame analysis app with a shared domain service, direct OpenAI Responses tools, an optional FastMCP adapter, and a PostgreSQL runtime datastore.
+Evidence-first NBA postgame analysis app centered on a custom harness that
+governs MCP tool use over a PostgreSQL runtime datastore.
+
+## Architecture Direction
+
+[Architecture V3](docs/architecture-v3.md) is the accepted target architecture.
+MCP is the required boundary between the agent harness and basketball data
+tools. The research question is whether a custom harness can improve how an
+agent selects, sequences, verifies, and stops using MCP tools.
+
+The repository is currently transitioning from the superseded direct-function
+prototype recorded in [Architecture V2](docs/architecture-v2.md). Until that
+transition is complete, the runnable mode descriptions below distinguish the
+prototype from the MCP path rather than claiming the target is implemented.
 
 ## Current Shape
 
 - `api/` contains the FastAPI app, HTTP routes, analyst logic, MCP server, ingestion, and OpenAI adapter.
 - `api/nba_agent/service.py` is the application core used by the API, Responses tools, and MCP adapter.
-- `api/nba_agent/responses_agent.py` is the primary OpenAI integration and returns validated structured analysis.
-- `api/nba_agent/mcp_server.py` is an optional interoperability adapter over the same service.
+- `api/nba_agent/responses_agent.py` is the transitional direct-function
+  prototype and returns validated structured analysis.
+- `api/nba_agent/mcp_server.py` exposes the required target tool boundary over
+  the domain service.
 - `frontend/` contains the standalone React UI served by Vite.
 - `prompts/` contains the editable OpenAI analyst prompt.
 - `api/nba_agent/storage/` contains the storage contract plus DuckDB and PostgreSQL adapters.
@@ -39,20 +54,28 @@ Open `http://127.0.0.1:3000`.
 ## Modes
 
 - `deterministic`: no OpenAI API call; uses local routing and deterministic memo builders.
-- `responses_tools`: primary mode; the Responses API calls four direct application function tools and returns JSON-schema output.
-- `local_agents_sdk_mcp`: legacy compatibility mode using the local FastMCP server over stdio.
-- `remote_responses_mcp`: legacy scaffold, not wired.
+- `responses_tools`: transitional prototype; the Responses API calls four
+  direct application functions and returns JSON-schema output.
+- `local_agents_sdk_mcp`: current MCP prototype using the local FastMCP server
+  over stdio.
+- `remote_responses_mcp`: incomplete remote MCP scaffold.
+
+The next primary mode will be the custom MCP-controlled harness described in
+Architecture V3. Direct function calls are not an acceptable substitute for MCP
+in capstone evaluation runs.
 
 ## Model-Facing Tools
 
-The primary Responses path exposes four task-level tools:
+The required MCP boundary exposes four preferred task-level tools:
 
 - `resolve_game`
 - `ensure_game_data`
 - `get_game_analysis_context`
 - `get_evidence_detail`
 
-The MCP server exposes the same four preferred tools and retains the old granular tools temporarily for client compatibility.
+The direct prototype currently mirrors these names. The MCP server is the
+authoritative agent-facing boundary and retains older granular tools temporarily
+for client compatibility; the harness will expose only a versioned allowlist.
 
 ## Ingestion Jobs
 
