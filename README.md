@@ -47,7 +47,7 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`. The dev server forwards `/api` requests (including
+Open `http://127.0.0.1:3000`. The dev server forwards `/api` requests (including
 the answer stream) to `NBA_API_PROXY_TARGET`, `http://127.0.0.1:8000` by default;
 set it in `frontend/.env` if the API runs on another port. Asking a question
 requires `alembic upgrade head` for PostgreSQL, because every harness run is
