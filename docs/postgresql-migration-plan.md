@@ -1,5 +1,8 @@
 # PostgreSQL Migration Plan
 
+> Configuration note (2026-09-22): This historical plan refers to `DATABASE_URL`.
+> The current application and Alembic configuration use `POSTGRES_CONNECTION_STRING`.
+
 ## Objective
 
 Replace DuckDB as the production datastore with PostgreSQL while preserving application behavior, evidence quality, ingestion idempotency, and operational traceability.

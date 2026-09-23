@@ -81,7 +81,7 @@ class PostgresConnection:
 
 
 class PostgresStorage:
-    """Pooled PostgreSQL storage selected by ``DATABASE_URL``.
+    """Pooled PostgreSQL storage selected by ``POSTGRES_CONNECTION_STRING``.
 
     The database must already be migrated with Alembic. This adapter never
     creates schema at application startup.

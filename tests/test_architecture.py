@@ -59,7 +59,7 @@ def test_evaluation_scoring_detects_grounding_failures():
 
 def test_storage_defaults_to_local_duckdb(monkeypatch):
     monkeypatch.delenv("NBA_STORAGE_BACKEND", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_CONNECTION_STRING", raising=False)
     assert storage_config()["backend"] == "duckdb"
 
 

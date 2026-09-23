@@ -70,7 +70,7 @@ There is no scheduled ETL. A game is fetched only when the user asks about it an
 - play-by-play rows
 - two advanced team rows
 
-PostgreSQL mode requires both `NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL`; the schema must be at the Alembic head before the API starts. The repository's local `.env` is configured this way. DuckDB remains available only as a temporary development/rollback adapter while deployment cutover is pending; it is not opened in PostgreSQL mode.
+PostgreSQL mode requires both `NBA_STORAGE_BACKEND=postgres` and `POSTGRES_CONNECTION_STRING`; the schema must be at the Alembic head before the API starts. The repository's local `.env` is configured this way. DuckDB remains available only as a temporary development/rollback adapter while deployment cutover is pending; it is not opened in PostgreSQL mode.
 
 For a fresh PostgreSQL database, run:
 

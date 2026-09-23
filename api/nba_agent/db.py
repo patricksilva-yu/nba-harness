@@ -17,15 +17,16 @@ def storage_config() -> dict[str, str | None]:
     """Describe the explicit local/deployed storage contract.
 
     DuckDB is the supported local backend. A deployed multi-user service must
-    provide DATABASE_URL and use the PostgreSQL migration before switching the
-    backend flag; silently sharing a DuckDB file is intentionally disallowed.
+    provide POSTGRES_CONNECTION_STRING and use the PostgreSQL migration before
+    switching the backend flag; silently sharing a DuckDB file is intentionally
+    disallowed.
     """
     backend = os.getenv("NBA_STORAGE_BACKEND", "duckdb").lower()
-    database_url = os.getenv("DATABASE_URL")
+    database_url = os.getenv("POSTGRES_CONNECTION_STRING")
     if backend not in {"duckdb", "postgres"}:
         raise RuntimeError(f"Unsupported NBA_STORAGE_BACKEND: {backend}")
     if backend == "postgres" and not database_url:
-        raise RuntimeError("DATABASE_URL is required when NBA_STORAGE_BACKEND=postgres")
+        raise RuntimeError("POSTGRES_CONNECTION_STRING is required when NBA_STORAGE_BACKEND=postgres")
     return {"backend": backend, "database_url": database_url, "local_path": str(DEFAULT_DB)}
 
 

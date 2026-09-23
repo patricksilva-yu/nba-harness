@@ -65,6 +65,11 @@ pytest -q
 python -c "import alembic, psycopg2, sqlalchemy"
 ```
 
+The test suite forces the default backend to an isolated temporary DuckDB
+database, regardless of the developer application's ignored `.env`. Tests that
+exercise PostgreSQL opt in explicitly with `POSTGRES_TEST_DATABASE_URL`; they
+never inherit `POSTGRES_CONNECTION_STRING` or `NBA_POSTGRES_SCHEMA`.
+
 Then confirm a connection to the disposable database using the test URL.
 
 ## Schema migrations
@@ -74,8 +79,8 @@ or fall back to a local DuckDB file:
 
 ```bash
 source .venv/bin/activate
-DATABASE_URL=postgresql://nba_test:nba_test_local_only@127.0.0.1:55432/nba_test alembic upgrade head
-DATABASE_URL=postgresql://nba_test:nba_test_local_only@127.0.0.1:55432/nba_test alembic current
+POSTGRES_CONNECTION_STRING=postgresql://nba_test:nba_test_local_only@127.0.0.1:55432/nba_test alembic upgrade head
+POSTGRES_CONNECTION_STRING=postgresql://nba_test:nba_test_local_only@127.0.0.1:55432/nba_test alembic current
 ```
 
 The PostgreSQL integration test uses a unique temporary schema inside this
@@ -89,13 +94,18 @@ POSTGRES_TEST_DATABASE_URL=postgresql://nba_test:nba_test_local_only@127.0.0.1:5
 ## Active local application database
 
 The active local API uses PostgreSQL when the ignored `.env` sets
-`NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL`. Apply migrations before
-starting against a fresh database:
+`NBA_STORAGE_BACKEND=postgres` and `POSTGRES_CONNECTION_STRING`. Apply
+migrations before starting against a fresh database:
 
 ```bash
 source .venv/bin/activate
 alembic upgrade head
 ```
+
+Alembic loads the repository's ignored `.env` for local commands. An exported
+shell variable or deployment environment takes precedence, so CI and production
+must inject `POSTGRES_CONNECTION_STRING` explicitly rather than relying on a
+file bundled with the application.
 
 Do not use the disposable test URL for the active application, and do not put
 the active connection string in committed files.
@@ -123,7 +133,7 @@ Run bounded cleanup batches from a scheduler when deployed:
 
 ```bash
 source .venv/bin/activate
-NBA_STORAGE_BACKEND=postgres DATABASE_URL='postgresql://...' \
+NBA_STORAGE_BACKEND=postgres POSTGRES_CONNECTION_STRING='postgresql://...' \
   python scripts/cleanup_raw_responses.py --retention-days 60 --batch-size 500
 ```
 

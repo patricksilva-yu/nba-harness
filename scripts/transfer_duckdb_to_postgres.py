@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse, json, os
 from datetime import datetime, timezone
+from pathlib import Path
 import duckdb
 import psycopg2
 from psycopg2.extras import Json, execute_values
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 TABLES = ["raw_responses", "games", "box_scores_team", "box_scores_player", "box_scores_advanced_team", "play_by_play_events", "lineup_stints", "evidence_packets", "analysis_runs", "ingestion_jobs", "seed_player_game_logs"]
 PKS = {"raw_responses":["response_id"], "games":["game_id"], "box_scores_team":["game_id","team_side"], "box_scores_player":["game_id","player_id"], "box_scores_advanced_team":["game_id","team_id"], "play_by_play_events":["game_id","eventnum"], "lineup_stints":["stint_id"], "evidence_packets":["packet_id"], "analysis_runs":["run_id"], "ingestion_jobs":["job_id"]}
 JSON_COLUMNS = {"raw_responses":{"request_json","response_json"}, "evidence_packets":{"payload_json"}, "analysis_runs":{"packet_ids_json"}, "ingestion_jobs":{"result_json"}}
+ROOT = Path(__file__).resolve().parents[1]
 
 def normalize(value):
     if isinstance(value, datetime) and value.tzinfo is None: return value.replace(tzinfo=timezone.utc)
@@ -18,8 +20,8 @@ def normalize(value):
 
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument("--source", required=True); parser.add_argument("--batch-size", type=int, default=1000); args=parser.parse_args()
-    load_dotenv(".env"); url=os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_CONNECTION_STRING")
-    if not url: raise RuntimeError("DATABASE_URL or POSTGRES_CONNECTION_STRING is required")
+    load_dotenv(ROOT / ".env"); url=os.environ.get("POSTGRES_CONNECTION_STRING")
+    if not url: raise RuntimeError("POSTGRES_CONNECTION_STRING is required")
     source=duckdb.connect(args.source, read_only=True); target=psycopg2.connect(url); target.autocommit=False
     report={}
     try:

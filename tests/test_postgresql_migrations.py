@@ -1,7 +1,7 @@
 """Integration coverage for the versioned PostgreSQL schema.
 
 These tests intentionally require an explicitly supplied disposable database.
-They never guess a developer or production DATABASE_URL.
+They never guess a developer or production POSTGRES_CONNECTION_STRING.
 """
 
 from __future__ import annotations
@@ -187,7 +187,7 @@ def test_postgres_mode_matches_duckdb_box_score_and_handles_concurrent_claims(mo
         assert get_box_score("game_parity", db_path=duck_path) == _box_score_from(postgres_storage)
 
         monkeypatch.setenv("NBA_STORAGE_BACKEND", "postgres")
-        monkeypatch.setenv("DATABASE_URL", POSTGRES_TEST_URL)
+        monkeypatch.setenv("POSTGRES_CONNECTION_STRING", POSTGRES_TEST_URL)
         monkeypatch.setenv("NBA_POSTGRES_SCHEMA", schema)
         assert get_box_score("game_parity") == _box_score_from(postgres_storage)
         response = TestClient(app).get("/api/games/game_parity/box-score")

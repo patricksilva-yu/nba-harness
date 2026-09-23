@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 
 config = context.config
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env")
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -18,11 +22,11 @@ if config.config_file_name is not None:
 def database_url() -> str:
     """Read the target explicitly so migrations never fall back to DuckDB."""
     url = config.get_main_option("sqlalchemy.url")
-    if url and "%(DATABASE_URL)s" not in url:
+    if url and "%(POSTGRES_CONNECTION_STRING)s" not in url:
         return url
-    url = os.getenv("DATABASE_URL")
+    url = os.getenv("POSTGRES_CONNECTION_STRING")
     if not url:
-        raise RuntimeError("DATABASE_URL is required to run PostgreSQL migrations")
+        raise RuntimeError("POSTGRES_CONNECTION_STRING is required to run PostgreSQL migrations")
     return url
 
 
@@ -40,7 +44,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     # Tests supply a connection with an isolated PostgreSQL schema through this
-    # attribute. Normal CLI usage creates the engine from DATABASE_URL.
+    # attribute. Normal CLI usage creates the engine from POSTGRES_CONNECTION_STRING.
     supplied_connection = config.attributes.get("connection")
     if supplied_connection is not None:
         context.configure(connection=supplied_connection, target_metadata=None, compare_type=True)

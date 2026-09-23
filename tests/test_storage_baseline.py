@@ -95,12 +95,14 @@ def test_initialize_database_is_idempotent(tmp_path):
 
 def test_postgres_config_requires_url_and_selects_its_adapter(monkeypatch, tmp_path):
     monkeypatch.setenv("NBA_STORAGE_BACKEND", "postgres")
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+    monkeypatch.delenv("POSTGRES_CONNECTION_STRING", raising=False)
+    with pytest.raises(RuntimeError, match="POSTGRES_CONNECTION_STRING is required"):
         storage_config()
 
-    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/nba")
+    monkeypatch.setenv("POSTGRES_CONNECTION_STRING", "postgresql://example.invalid/nba")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unused.invalid/other")
     assert storage_config()["backend"] == "postgres"
+    assert storage_config()["database_url"] == "postgresql://example.invalid/nba"
     from api.nba_agent.storage import PostgresStorage
 
     assert isinstance(get_storage(tmp_path / "postgres_not_ready.duckdb"), PostgresStorage)

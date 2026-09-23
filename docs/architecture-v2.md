@@ -25,7 +25,7 @@ The NBA domain service is the center of the application. HTTP, OpenAI Responses 
 
 ## Storage
 
-PostgreSQL is the active configured datastore. The API selects it only when both `NBA_STORAGE_BACKEND=postgres` and `DATABASE_URL` are set, and startup verifies that Alembic has initialized the schema. The application never silently falls back to DuckDB in PostgreSQL mode.
+PostgreSQL is the active configured datastore. The API selects it only when both `NBA_STORAGE_BACKEND=postgres` and `POSTGRES_CONNECTION_STRING` are set, and startup verifies that Alembic has initialized the schema. The application never silently falls back to DuckDB in PostgreSQL mode.
 
 DuckDB remains a temporary local-development and rollback adapter during the deployment cutover window. It is not a dependency of the PostgreSQL runtime path. See [the migration plan](postgresql-migration-plan.md) for cutover status and completed-transfer details.
 

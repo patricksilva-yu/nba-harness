@@ -44,9 +44,9 @@ Use an explicit PostgreSQL URL; the command never defaults to DuckDB:
 
 ```bash
 source .venv/bin/activate
-DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" alembic upgrade head
-DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" alembic current
-DATABASE_URL="$POSTGRES_TEST_DATABASE_URL" alembic downgrade -1
+POSTGRES_CONNECTION_STRING="$POSTGRES_TEST_DATABASE_URL" alembic upgrade head
+POSTGRES_CONNECTION_STRING="$POSTGRES_TEST_DATABASE_URL" alembic current
+POSTGRES_CONNECTION_STRING="$POSTGRES_TEST_DATABASE_URL" alembic downgrade -1
 ```
 
 For the disposable development service, set `POSTGRES_TEST_DATABASE_URL` from
