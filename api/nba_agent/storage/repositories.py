@@ -18,6 +18,91 @@ def decode_json(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
 
+class HarnessRunRepository:
+    """One atomic snapshot per event; no connection is held across network awaits.
+
+    A run has one controller writer. Terminal records are immutable. An abrupt
+    process death leaves the last checkpoint visibly running, never successful.
+    """
+
+    def __init__(self, storage: StorageBackend):
+        self._storage = storage
+
+    def create(self, record: dict) -> None:
+        self._storage.initialize()
+        connection = self._storage.open(read_only=False)
+        try:
+            connection.execute(
+                """INSERT INTO harness_runs (run_id, status, record_json, conversation_id, parent_run_id)
+                VALUES (?, ?, ?, ?, ?)""",
+                [record["run_id"], "running", json.dumps(record, allow_nan=False),
+                 record.get("conversation_id"), record.get("parent_run_id")],
+            )
+        finally:
+            connection.close()
+
+    def save(self, record: dict) -> None:
+        connection = self._storage.open(read_only=False)
+        try:
+            row = connection.execute(
+                """UPDATE harness_runs SET status = ?, stop_reason = ?, record_json = ?,
+                updated_at = current_timestamp WHERE run_id = ? AND status = 'running'
+                RETURNING run_id""",
+                [record["status"], record.get("stop_reason"), json.dumps(record, allow_nan=False), record["run_id"]],
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Harness run missing or already terminal")
+        finally:
+            connection.close()
+
+    def get(self, run_id: str) -> dict | None:
+        connection = self._storage.open()
+        try:
+            row = connection.execute("SELECT record_json FROM harness_runs WHERE run_id = ?", [run_id]).fetchone()
+            return decode_json(row[0]) if row else None
+        finally:
+            connection.close()
+
+    def conversation(self, conversation_id: str) -> list[dict]:
+        """Every run in a conversation, oldest first."""
+        connection = self._storage.open()
+        try:
+            rows = connection.execute(
+                """SELECT record_json FROM harness_runs WHERE conversation_id = ?
+                ORDER BY created_at, run_id""",
+                [conversation_id],
+            ).fetchall()
+            return [decode_json(row[0]) for row in rows]
+        finally:
+            connection.close()
+
+    def recent_conversations(self, limit: int = 20) -> list[dict]:
+        """Newest conversations first, each described by its opening run."""
+        connection = self._storage.open()
+        try:
+            rows = connection.execute(
+                """SELECT first.conversation_id, first.record_json, latest.runs, latest.updated_at
+                FROM (SELECT conversation_id, COUNT(*) AS runs, MAX(updated_at) AS updated_at
+                      FROM harness_runs WHERE conversation_id IS NOT NULL GROUP BY conversation_id) AS latest
+                JOIN harness_runs AS first
+                  ON first.conversation_id = latest.conversation_id AND first.parent_run_id IS NULL
+                ORDER BY latest.updated_at DESC LIMIT ?""",
+                [limit],
+            ).fetchall()
+        finally:
+            connection.close()
+        conversations = []
+        for conversation_id, record_json, runs, updated_at in rows:
+            record = decode_json(record_json)
+            resolution = record.get("resolution") or {}
+            conversations.append({
+                "conversation_id": conversation_id, "question": record["question"], "game_id": record.get("game_id"),
+                "game_label": resolution.get("label"), "runs": runs,
+                "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at,
+            })
+        return conversations
+
+
 class EvidenceRepository:
     def __init__(self, storage: StorageBackend) -> None:
         self._storage = storage

@@ -3,6 +3,7 @@ alembic>=1.13.0,<2.0.0
 fastmcp==3.3.1
 fastapi>=0.115.0,<1.0.0
 mcp==1.27.1
+jsonschema>=4.23.0,<5.0.0
 nba_api==1.11.4
 openai>=2.0.0,<3.0.0
 openai-agents>=0.14.0,<1.0.0

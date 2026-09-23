@@ -1,5 +1,11 @@
 # Capstone Project Scope
 
+> **Supersession note (2026-09-23):** The web application's primary audience is
+> now basketball fans seeking evidence-checked postgame answers, with support for
+> follow-up questions about the same game. The developer remains the system
+> evaluator, and the Analysis, Investigation and Evaluation views remain in scope.
+> The original text below is preserved as the point-in-time scope.
+
 ## Project Title
 
 **Reliable NBA Analysis Through MCP, Agent Harnesses, and Evaluation Loops**

@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from typing import Annotated, Literal
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from api.nba_agent.agent import run_agent
 from api.nba_agent.analysis import run_analysis
 from api.nba_agent.official_ingest import import_official_player_box
 from api.nba_agent.service import NBAService
+from api.nba_agent.db import get_storage
+from api.nba_agent.storage.repositories import EvidenceRepository
 from api.nba_agent.tools import (
     ensure_game_cached,
     find_decisive_runs,
@@ -25,30 +32,71 @@ from api.nba_agent.tools import (
 
 
 mcp = FastMCP("nba-analyst")
-domain = NBAService()
+domain = NBAService(Path(os.environ["NBA_MCP_DB_PATH"])) if os.getenv("NBA_MCP_DB_PATH") else NBAService()
 
 
 @mcp.tool()
-def resolve_game(query: str, season_type: str = "Auto") -> dict:
+def resolve_game(query: str, season_type: str = "Auto", game_id: str | None = None, season: str | None = None) -> dict:
     """Resolve a natural-language completed NBA game reference. Read-only and safe to retry."""
-    return domain.resolve_game(query, season_type=season_type)
+    return domain.resolve_game(query, game_id=game_id, season=season, season_type=season_type)
 
 
 @mcp.tool()
-def ensure_game_data(game_id: str, season_type: str = "Playoffs") -> dict:
+def ensure_game_data(game_id: str, season_type: str = "Playoffs", season: str | None = None) -> dict:
     """Ensure official data for a game is cached. May use the network and is safe to retry."""
-    return domain.ensure_game_data(game_id, season_type=season_type)
+    return domain.ensure_game_data(game_id, season=season, season_type=season_type)
+
+
+Section = Literal["snapshot", "periods", "runs", "players", "advanced", "possessions", "lineups"]
+
+SECTIONS_HELP = """Request only the sections the question needs. Each returns evidence packets:
+- snapshot: final score.
+- periods: points per quarter/overtime, score and leader at each break, each team's largest lead
+  with its clock time, lead changes and ties. Start here for leads, comebacks and "which quarter".
+- runs: the top three scoring stretches, each with start/end clock, start/end score and margin change.
+  Summaries only; get_evidence_detail on a run lists its plays and per-player points.
+- players: box-score lines (minutes, points, rebounds, assists, shooting, plus/minus) for leading players.
+- advanced: team offensive/defensive/net rating, effective and true shooting, turnover and rebound rates, pace.
+- possessions: whole-game counts of shots, turnovers and free-throw events. Not per quarter.
+- lineups: rotation stint counts inferred from substitutions; low confidence, no validated five-man units.
+For what happened in a specific stretch of time, use get_game_window instead."""
 
 
 @mcp.tool()
-def get_game_analysis_context(game_id: str, sections: list[str] | None = None) -> dict:
-    """Return evidence-backed context for requested sections of one cached game."""
-    return domain.get_analysis_context(game_id, sections=sections, persist=False)
+def get_game_analysis_context(
+    game_id: str,
+    sections: Annotated[list[Section], Field(min_length=1, description=SECTIONS_HELP)],
+) -> dict:
+    """Return evidence packets for chosen sections of one cached game. Overview data: use it to find
+    where the game turned, then get_game_window for what happened in that stretch."""
+    result = domain.get_analysis_context(game_id, sections=sections, persist=False)
+    EvidenceRepository(get_storage(domain.db_path)).save_many(game_id, result["evidence_packets"])
+    return result
+
+
+Clock = Annotated[str, Field(pattern=r"^\d{1,2}:\d{2}$", description="Game clock remaining in the period, e.g. 8:51.")]
+
+
+@mcp.tool()
+def get_game_window(
+    game_id: str,
+    period: Annotated[int, Field(ge=1, le=10, description="Period where the window starts: 1-4, 5 for OT, 6 for 2OT.")],
+    from_clock: Annotated[str | None, Field(pattern=r"^\d{1,2}:\d{2}$", description="Start clock; omit for the start of the period.")] = None,
+    to_clock: Clock = "0:00",
+    end_period: Annotated[int | None, Field(ge=1, le=10, description="Period where the window ends; omit for the same period.")] = None,
+) -> dict:
+    """What happened in one stretch of game time, as a single evidence packet: score before and after,
+    points per team, team shooting and turnovers, per-player points and shooting, and the plays.
+    Use it for questions like "last five minutes", "start of the third" or a run's window."""
+    result = domain.get_game_window(game_id, period, from_clock, to_clock, end_period)
+    EvidenceRepository(get_storage(domain.db_path)).save_many(game_id, result["evidence_packets"])
+    return result
 
 
 @mcp.tool()
 def get_evidence_detail(packet_id: str, game_id: str) -> dict:
-    """Rehydrate one compact evidence packet into its supporting detail."""
+    """Rehydrate one evidence packet into its supporting detail. For a scoring-run packet this
+    includes every described play in the run and per-player points and shooting for the run."""
     return domain.get_evidence_detail(packet_id, game_id)
 
 

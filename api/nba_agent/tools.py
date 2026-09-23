@@ -208,6 +208,50 @@ def requested_playoff_game_number(query: str) -> int | None:
     return int(match.group(1))
 
 
+# Checked in order: "conference finals" before "finals"; "semifinals" never matches "finals".
+PLAYOFF_ROUND_PATTERNS = (
+    (3, r"\b(?:conference|conf|east(?:ern)?|west(?:ern)?)(?: conference)? finals\b|\b(?:ecf|wcf)\b"),
+    (2, r"\bsemi-?finals\b|\bsemis\b|\b(?:second|2nd) round\b"),
+    (4, r"\bfinals\b"),
+    (1, r"\b(?:first|1st|opening) round\b"),
+)
+
+
+def requested_playoff_round(query: str) -> int | None:
+    text = query.lower()
+    for playoff_round, pattern in PLAYOFF_ROUND_PATTERNS:
+        if re.search(pattern, text):
+            return playoff_round
+    return None
+
+
+def playoff_position(game_id: str) -> tuple[int, int] | None:
+    """(round, game number) from an NBA playoff game id: 004 YY 00 round series game."""
+    match = re.fullmatch(r"004\d{2}00(\d)\d(\d)", str(game_id))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def number_series_games(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach playoff round and game-in-series, preferring the game id's own encoding.
+
+    Games whose ids do not follow the playoff pattern are numbered by date
+    within their matchup; they have no known round.
+    """
+    by_matchup: dict[frozenset, list[dict[str, Any]]] = {}
+    for game in games:
+        by_matchup.setdefault(frozenset((game["home_team_abbr"], game["away_team_abbr"])), []).append(game)
+    order = {}
+    for matchup_games in by_matchup.values():
+        for index, game in enumerate(sorted(matchup_games, key=lambda g: (g["game_date"], g["game_id"]))):
+            order[game["game_id"]] = index + 1
+    numbered = []
+    for game in games:
+        position = playoff_position(game["game_id"])
+        playoff_round, number = position if position else (None, order[game["game_id"]])
+        numbered.append({**game, "playoff_round": playoff_round, "series_game_number": number})
+    return numbered
+
+
 def same_matchup(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return {a["home_team_abbr"], a["away_team_abbr"]} == {b["home_team_abbr"], b["away_team_abbr"]}
 
@@ -232,6 +276,7 @@ def resolve_game_reference(
     matched_teams = matching_team_abbrs(query)
     requested_date = requested_game_date(query)
     requested_game_number = requested_playoff_game_number(query)
+    requested_round = requested_playoff_round(query)
     preference = "exact_date_match" if requested_date else "disambiguate_repeated_matchups"
 
     candidates = []
@@ -248,32 +293,26 @@ def resolve_game_reference(
     if requested_date:
         candidates = [candidate for candidate in candidates if str(candidate["game_date"])[:10] == requested_date]
 
-    if requested_game_number and matched_teams:
-        playoff_candidates = [
+    if (requested_game_number or requested_round) and matched_teams:
+        series_candidates = number_series_games([
             candidate
             for candidate in candidates
             if str(candidate.get("season_type", "")).lower() == "playoffs"
+            and matched_teams.issubset({candidate["home_team_abbr"], candidate["away_team_abbr"]})
+        ])
+        # "Game 5" alone means game 5 of a series, never the team's fifth playoff game.
+        # Without a named round, the most recent matching series is selected below.
+        matches = [
+            candidate
+            for candidate in series_candidates
+            if (not requested_game_number or candidate["series_game_number"] == requested_game_number)
+            and (not requested_round or candidate["playoff_round"] == requested_round)
         ]
-        series_candidates = sorted(
-            [
-                candidate
-                for candidate in playoff_candidates
-                if matched_teams.issubset({candidate["home_team_abbr"], candidate["away_team_abbr"]})
-            ],
-            key=lambda game: (game["game_date"], game["game_id"]),
-        )
-        if len(series_candidates) >= requested_game_number:
-            candidates = [
-                {**candidate, "series_game_number": index + 1}
-                for index, candidate in enumerate(series_candidates)
-                if index + 1 == requested_game_number
-            ]
+        if matches:
+            candidates = matches
             preference = "playoff_series_game_match"
-        elif series_candidates:
-            candidates = [
-                {**candidate, "series_game_number": index + 1}
-                for index, candidate in enumerate(series_candidates)
-            ]
+        elif series_candidates and requested_game_number:
+            candidates = series_candidates
 
     if not candidates:
         return {
@@ -343,6 +382,7 @@ def resolve_game_reference(
             "matched_teams": sorted(matched_teams),
             "requested_date": requested_date,
             "requested_game_number": requested_game_number,
+            "requested_playoff_round": requested_round,
             "game_id": selected["game_id"],
             "label": selected["label"],
             "game_date": selected["game_date"],
@@ -876,6 +916,53 @@ def scoring_events(con: StorageConnection, game_id: str) -> list[dict[str, Any]]
     return [dict(zip(cols, row)) for row in rows]
 
 
+def game_elapsed_minutes(period: int, clock: str | None) -> float | None:
+    """Minutes since tip-off; regulation quarters are 12 minutes, overtimes 5."""
+    if not clock or ":" not in clock:
+        return None
+    minutes, seconds = clock.split(":", 1)
+    length = 12 if period <= 4 else 5
+    start = (period - 1) * 12 if period <= 4 else 48 + (period - 5) * 5
+    return round(start + length - (int(minutes) + float(seconds) / 60), 3)
+
+
+def get_game_flow(game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
+    """Score margin at every scoring change, for display beside an answer.
+
+    This is page context, not agent evidence: claims still cite MCP packets.
+    """
+    con = get_storage(db_path).open()
+    try:
+        game = con.execute(
+            "SELECT home_team_abbr, away_team_abbr, home_score, away_score FROM games WHERE game_id = ?",
+            [game_id],
+        ).fetchone()
+        if not game:
+            return {"game_id": game_id, "status": "not_found", "points": []}
+        events = scoring_events(con, game_id)
+    finally:
+        con.close()
+    home_abbr, away_abbr, home_score, away_score = game
+    points = [{"period": 1, "clock": "12:00", "minute": 0.0, "away_score": 0, "home_score": 0, "margin": 0}]
+    for event in events:
+        minute = game_elapsed_minutes(int(event["period"]), event["pctimestring"])
+        if minute is None:
+            continue
+        away, home = int(event["score_away"]), int(event["score_home"])
+        if (away, home) == (points[-1]["away_score"], points[-1]["home_score"]):
+            continue
+        points.append({"period": int(event["period"]), "clock": event["pctimestring"], "minute": minute,
+                       "away_score": away, "home_score": home, "margin": away - home})
+    periods = max([p["period"] for p in points] + [4])
+    return {
+        "game_id": game_id, "status": "ok" if len(points) > 1 else "no_play_by_play",
+        "away_team_abbr": away_abbr, "home_team_abbr": home_abbr,
+        "away_score": away_score, "home_score": home_score,
+        "periods": periods, "length_minutes": 48 + max(0, periods - 4) * 5,
+        "margin_perspective": "away", "points": points,
+    }
+
+
 def find_decisive_runs(
     game_id: str,
     db_path: Path = DEFAULT_DB,
@@ -1388,67 +1475,297 @@ def get_player_game_context(
     }, db_path, persist=persist)
 
 
-def rehydrate_evidence_packet(packet_id_value: str, game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
-    con = get_storage(db_path).open()
-    stored_packet = con.execute(
-        """
-        SELECT packet_id, packet_type, claim_seed, source_provider, source_detail,
-               evidence_level, confidence, payload_json
-        FROM evidence_packets
-        WHERE packet_id = ? AND game_id = ?
-        """,
-        [packet_id_value, game_id],
+def period_label(period: int) -> str:
+    return f"Q{period}" if period <= 4 else ("OT" if period == 5 else f"{period - 4}OT")
+
+
+def period_length(period: int) -> int:
+    return 12 if period <= 4 else 5
+
+
+def game_events(con: StorageConnection, game_id: str) -> dict[str, Any] | None:
+    """Every play-by-play event with its game minute, running score and points scored.
+
+    Shared by periods, time windows and scoring-run details so all three agree.
+    """
+    game = con.execute(
+        "SELECT home_team_abbr, away_team_abbr FROM games WHERE game_id = ?", [game_id]
     ).fetchone()
-    if stored_packet:
-        cols = [d[0] for d in con.description]
-        stored = dict(zip(cols, stored_packet))
-        stored["payload"] = decode_storage_json(stored.pop("payload_json"))
-        con.close()
-        return {
-            "summary": {
-                "packet_id": packet_id_value,
-                "game_id": game_id,
-                "source": "evidence_packets",
-            },
-            "packet": stored,
-        }
-    if packet_id_value.startswith("run_"):
-        parts = packet_id_value.split("_")
-        start_event = int(parts[-2])
-        end_event = int(parts[-1])
-        rows = con.execute(
-            """
-            SELECT eventnum, period, pctimestring, homedescription, visitordescription, score
-            FROM play_by_play_events
-            WHERE game_id = ?
-              AND eventnum BETWEEN ? AND ?
-            ORDER BY period, eventnum
-            """,
-            [game_id, start_event, end_event],
-        ).fetchall()
-        cols = [d[0] for d in con.description]
-        con.close()
-        return {
-            "summary": {
-                "packet_id": packet_id_value,
-                "game_id": game_id,
-                "row_count": len(rows),
-                "source": "play_by_play_events",
-            },
-            "rows": [dict(zip(cols, row)) for row in rows],
-        }
-    if packet_id_value.startswith("snapshot_"):
-        snapshot = get_game_snapshot(game_id, db_path)
-        con.close()
-        return {"summary": {"packet_id": packet_id_value, "game_id": game_id}, "snapshot": snapshot}
-    con.close()
+    if not game:
+        return None
+    home_abbr, away_abbr = game
+    rows = con.execute(
+        """
+        SELECT eventnum, eventmsgtype, period, pctimestring, homedescription, visitordescription,
+               score_away, score_home, player1_name, player1_team_abbreviation, source
+        FROM play_by_play_events
+        WHERE game_id = ?
+        ORDER BY period, eventnum
+        """,
+        [game_id],
+    ).fetchall()
+    events = []
+    away, home = 0, 0
+    source = None
+    for eventnum, kind, period, clock, home_text, away_text, score_away, score_home, player, player_team, row_source in rows:
+        source = source or row_source
+        minute = game_elapsed_minutes(int(period), clock) if period else None
+        points = 0
+        if score_away is not None and score_home is not None:
+            points = (int(score_away) - away) + (int(score_home) - home)
+            away, home = int(score_away), int(score_home)
+        text = home_text or away_text
+        team = home_abbr if home_text else away_abbr if away_text else player_team
+        events.append({
+            "eventnum": eventnum, "kind": kind, "period": int(period) if period else None, "clock": clock,
+            "minute": minute, "description": text, "team": team, "player": player,
+            "points": points, "away_score": away, "home_score": home,
+        })
+    return {"away": away_abbr, "home": home_abbr, "events": events,
+            "source_detail": source or "old/nba.sqlite:play_by_play"}
+
+
+def summarize_events(game: dict[str, Any], selected: list[dict[str, Any]], before: dict[str, Any] | None) -> dict[str, Any]:
+    """Plays, team totals and per-player lines for a contiguous slice of events."""
+    away, home = game["away"], game["home"]
+    start = (before or {}).get("away_score", 0), (before or {}).get("home_score", 0)
+    end = (selected[-1]["away_score"], selected[-1]["home_score"]) if selected else start
+    blank = lambda: {"pts": 0, "fgm": 0, "fga": 0, "fg3m": 0, "fg3a": 0, "ftm": 0, "fta": 0, "reb": 0, "tov": 0}
+    teams = {away: blank(), home: blank()}
+    players: dict[tuple[str, str], dict[str, Any]] = {}
+    plays = []
+    for event in selected:
+        if not event["description"]:
+            continue
+        text = event["description"]
+        three = "3PT" in text
+        lines = [teams.get(event["team"])]
+        if event["player"] and event["kind"] in (1, 2, 3, 4, 5):
+            key = (event["player"], event["team"])
+            players.setdefault(key, {"player": event["player"], "team": event["team"], **blank()})
+            lines.append(players[key])
+        for line in filter(None, lines):
+            if event["kind"] in (1, 2):
+                line["fga"] += 1
+                line["fg3a"] += three
+                line["fgm"] += event["kind"] == 1
+                line["fg3m"] += three and event["kind"] == 1
+            elif event["kind"] == 3:
+                line["fta"] += 1
+                line["ftm"] += event["points"] > 0
+            elif event["kind"] == 4:
+                line["reb"] += 1
+            elif event["kind"] == 5:
+                line["tov"] += 1
+            line["pts"] += event["points"]
+        plays.append({
+            "eventnum": event["eventnum"], "period": event["period"], "clock": event["clock"], "team": event["team"],
+            "player": event["player"], "description": text, "points": event["points"],
+            "score": f"{away} {event['away_score']}, {home} {event['home_score']}" if event["points"] else None,
+            "scoring": event["points"] > 0,
+        })
     return {
-        "summary": {
-            "packet_id": packet_id_value,
-            "game_id": game_id,
-            "resolution_status": "not_found_or_not_yet_persisted",
-        }
+        "score_before": f"{away} {start[0]}, {home} {start[1]}",
+        "score_after": f"{away} {end[0]}, {home} {end[1]}",
+        "team_points": {away: end[0] - start[0], home: end[1] - start[1]},
+        "team_stats": teams,
+        "players": sorted((p for p in players.values() if any(p[k] for k in blank())),
+                          key=lambda p: (-p["pts"], -p["fgm"], p["player"])),
+        "plays": plays,
     }
+
+
+def run_window_plays(con: StorageConnection, game_id: str, start_event: int, end_event: int) -> dict[str, Any]:
+    """Plays and per-player totals inside a scoring-run window, by event number."""
+    game = game_events(con, game_id)
+    if game is None:
+        return summarize_events({"away": "AWAY", "home": "HOME"}, [], None)
+    events = game["events"]
+    selected = [e for e in events if start_event <= e["eventnum"] <= end_event]
+    before = next((e for e in reversed(events) if e["eventnum"] < start_event), None)
+    return summarize_events(game, selected, before)
+
+
+PLAY_LIMIT = 120
+
+
+def get_game_window(
+    game_id: str,
+    period: int,
+    from_clock: str | None = None,
+    to_clock: str = "0:00",
+    end_period: int | None = None,
+    db_path: Path = DEFAULT_DB,
+    persist: bool = False,
+) -> dict[str, Any]:
+    """What happened in one stretch of game time: score change, team and player lines, and plays."""
+    end_period = end_period or period
+    from_clock = from_clock or f"{period_length(period)}:00"
+    start = game_elapsed_minutes(period, from_clock)
+    end = game_elapsed_minutes(end_period, to_clock)
+    if start is None or end is None or end < start:
+        return {"summary": {"game_id": game_id, "resolution_status": "invalid_window"}, "evidence_packets": []}
+    con = get_storage(db_path).open()
+    try:
+        game = game_events(con, game_id)
+    finally:
+        con.close()
+    if game is None:
+        return {"summary": {"game_id": game_id, "resolution_status": "not_found"}, "evidence_packets": []}
+    events = [e for e in game["events"] if e["minute"] is not None]
+    # Events exactly at the start clock (e.g. free throws after a foul) belong to the window.
+    selected = [e for e in events if start <= e["minute"] <= end]
+    before = next((e for e in reversed(events) if e["minute"] < start), None)
+    summary = summarize_events(game, selected, before)
+    away, home = game["away"], game["home"]
+    label = f"{period_label(period)} {from_clock} to {period_label(end_period)} {to_clock}"
+    points = summary["team_points"]
+    leader, trailer = (away, home) if points[away] >= points[home] else (home, away)
+    plays = summary.pop("plays")
+    caveats = [] if selected else ["No play-by-play events fall inside this window."]
+    if len(plays) > PLAY_LIMIT:
+        plays = [play for play in plays if play["scoring"] or "Turnover" in play["description"]]
+        caveats.append("Long window: only scoring plays and turnovers are listed; totals include every event.")
+    source_detail = game["source_detail"]
+    packet = {
+        "packet_id": packet_id("window", game_id, period_label(period), from_clock, period_label(end_period), to_clock),
+        "type": "game_window",
+        "claim_seed": (
+            f"From {label}, {leader} outscored {trailer} {points[leader]}-{points[trailer]} "
+            f"({summary['score_before']} to {summary['score_after']})."
+        ),
+        "window": {"period_start": period, "clock_start": from_clock, "period_end": end_period, "clock_end": to_clock},
+        "metrics": summary,
+        "plays": plays,
+        "source": {"provider": "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture",
+                   "detail": source_detail},
+        "evidence_level": "core",
+        "confidence": "high" if selected else "low",
+        "caveats": caveats,
+    }
+    return with_persisted_packets(game_id, {
+        "summary": {"game_id": game_id, "window": label, "event_count": len(selected), "play_count": len(plays)},
+        "evidence_packets": [packet],
+    }, db_path, persist=persist)
+
+
+def get_period_summary(game_id: str, db_path: Path = DEFAULT_DB, persist: bool = False) -> dict[str, Any]:
+    """Quarter-by-quarter scoring, the margin at each break, largest leads and lead changes."""
+    con = get_storage(db_path).open()
+    try:
+        game = game_events(con, game_id)
+    finally:
+        con.close()
+    if game is None:
+        return {"summary": {"game_id": game_id, "resolution_status": "not_found"}, "evidence_packets": []}
+    away, home = game["away"], game["home"]
+    scored = [e for e in game["events"] if e["period"] and e["points"]]
+    periods, previous = [], (0, 0)
+    for period in sorted({e["period"] for e in game["events"] if e["period"]}):
+        last = [e for e in scored if e["period"] <= period]
+        score = (last[-1]["away_score"], last[-1]["home_score"]) if last else previous
+        periods.append({
+            "period": period, "label": period_label(period),
+            f"{away}_points": score[0] - previous[0], f"{home}_points": score[1] - previous[1],
+            "score_at_end": f"{away} {score[0]}, {home} {score[1]}",
+            "leader_at_end": away if score[0] > score[1] else home if score[1] > score[0] else "tied",
+            "margin_at_end": abs(score[0] - score[1]),
+        })
+        previous = score
+    largest = {away: None, home: None}
+    lead_changes = ties = 0
+    leader = None
+    for e in scored:
+        margin = e["away_score"] - e["home_score"]
+        current = away if margin > 0 else home if margin < 0 else None
+        if current is None and leader is not None:
+            ties += 1
+        if current and leader and current != leader:
+            lead_changes += 1
+        if current:
+            leader = current
+            if largest[current] is None or abs(margin) > largest[current]["points"]:
+                largest[current] = {"points": abs(margin), "period": period_label(e["period"]), "clock": e["clock"],
+                                    "score": f"{away} {e['away_score']}, {home} {e['home_score']}"}
+        # A tie keeps the previous leader, so a lead retaken after a tie is not a change.
+    lead_text = "; ".join(
+        f"{team} led by as many as {lead['points']} ({lead['period']} {lead['clock']})"
+        for team, lead in largest.items() if lead
+    )
+    source_detail = game["source_detail"]
+    packet = {
+        "packet_id": packet_id("periods", game_id),
+        "type": "period_summary",
+        "claim_seed": f"Final {periods[-1]['score_at_end'] if periods else ''}. {lead_text}. "
+                      f"{lead_changes} lead changes, {ties} ties.".strip(),
+        "metrics": {"periods": periods, "largest_lead": largest, "lead_changes": lead_changes, "ties": ties},
+        "source": {"provider": "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture",
+                   "detail": source_detail},
+        "evidence_level": "core",
+        "confidence": "high" if scored else "low",
+        "caveats": [] if scored else ["No scored play-by-play events are stored for this game."],
+    }
+    return with_persisted_packets(game_id, {
+        "summary": {"game_id": game_id, "periods": len(periods)},
+        "evidence_packets": [packet],
+    }, db_path, persist=persist)
+
+
+def rehydrate_evidence_packet(packet_id_value: str, game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
+    """Return a stored packet; a scoring-run packet also returns the plays inside its window."""
+    con = get_storage(db_path).open()
+    try:
+        stored_packet = con.execute(
+            """
+            SELECT packet_id, packet_type, claim_seed, source_provider, source_detail,
+                   evidence_level, confidence, payload_json
+            FROM evidence_packets
+            WHERE packet_id = ? AND game_id = ?
+            """,
+            [packet_id_value, game_id],
+        ).fetchone()
+        stored = None
+        if stored_packet:
+            cols = [d[0] for d in con.description]
+            stored = dict(zip(cols, stored_packet))
+            stored["payload"] = decode_storage_json(stored.pop("payload_json"))
+        if packet_id_value.startswith("run_"):
+            window = (stored or {}).get("payload", {}).get("window") or {}
+            parts = packet_id_value.split("_")
+            start_event = int(window.get("start_eventnum", parts[-2]))
+            end_event = int(window.get("end_eventnum", parts[-1]))
+            window = run_window_plays(con, game_id, start_event, end_event)
+            plays = window.pop("plays")
+            response = {
+                "summary": {
+                    "packet_id": packet_id_value,
+                    "game_id": game_id,
+                    "play_count": len(plays),
+                    "scoring_play_count": sum(play["scoring"] for play in plays),
+                    "source": "play_by_play_events",
+                },
+                "window_totals": window,
+                "plays": plays,
+            }
+            if stored:
+                response["packet"] = stored
+            return response
+        if stored:
+            return {
+                "summary": {"packet_id": packet_id_value, "game_id": game_id, "source": "evidence_packets"},
+                "packet": stored,
+            }
+        if packet_id_value.startswith("snapshot_"):
+            return {"summary": {"packet_id": packet_id_value, "game_id": game_id}, "snapshot": get_game_snapshot(game_id, db_path)}
+        return {
+            "summary": {
+                "packet_id": packet_id_value,
+                "game_id": game_id,
+                "resolution_status": "not_found_or_not_yet_persisted",
+            }
+        }
+    finally:
+        con.close()
 
 
 def main() -> int:

@@ -1,3 +1,4 @@
+import pytest
 from api.nba_agent.agent import classify_question, run_agent, season_type_for_ingest
 from api.nba_agent.analysis import winning_team
 import api.nba_agent.tools as tools
@@ -254,3 +255,43 @@ def test_season_type_for_ingest_uses_resolved_season_type():
 def test_season_type_for_ingest_falls_back_to_game_id_prefix_for_provided_ids():
     assert season_type_for_ingest({"summary": {"game_id": "0042500316"}}, "Auto") == "Playoffs"
     assert season_type_for_ingest({"summary": {"game_id": "0022501196"}}, "Auto") == "Regular Season"
+
+
+def spurs_playoff_run():
+    """Spurs games across three rounds; ids encode round and game number."""
+    series = [("0042500150", "POR", "2026-04-{:02d}", 20), ("0042500230", "DEN", "2026-05-{:02d}", 5), ("0042500400", "NYK", "2026-06-{:02d}", 3)]
+    games = []
+    for prefix, opponent, day, start in series:
+        for number in range(1, 7):
+            games.append({"game_id": f"{prefix[:-1]}{number}", "game_date": day.format(start + number), "season_type": "Playoffs",
+                          "label": f"{opponent} 100, SAS 101", "home_team_abbr": "SAS", "away_team_abbr": opponent,
+                          "home_score": 101, "away_score": 100})
+    return {"summary": {"searched_season_types": ["Playoffs"], "count": len(games)},
+            "games": sorted(games, key=lambda g: g["game_date"], reverse=True), "source_status": [], "warnings": []}
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("why did the Spurs lose their lead in the 4th quarter of game 5? game 5 of finals", "0042500405"),
+    ("Game 5 of the NBA Finals, Spurs lost their lead", "0042500405"),
+    ("Spurs game 5 in the first round", "0042500155"),
+    ("Spurs game 5 conference semifinals", "0042500235"),
+    # No round named: game 5 of the most recent series, not the Spurs' fifth playoff game.
+    ("Why did the Spurs win game 5?", "0042500405"),
+])
+def test_resolution_reads_series_game_and_round(monkeypatch, query, expected):
+    monkeypatch.setattr(tools, "find_recent_completed_games_for_resolution", lambda **_: spurs_playoff_run())
+    resolution = resolve_game_reference(query, season_type="Auto")
+    assert resolution["summary"]["resolution_status"] == "resolved"
+    assert resolution["summary"]["game_id"] == expected
+    assert resolution["summary"]["series_game_number"] == 5
+
+
+def test_playoff_round_words():
+    from api.nba_agent.tools import requested_playoff_round
+    assert requested_playoff_round("NBA Finals game 2") == 4
+    assert requested_playoff_round("East finals") == 3
+    assert requested_playoff_round("western conference finals") == 3
+    assert requested_playoff_round("conference semifinals") == 2
+    assert requested_playoff_round("semi-finals") == 2
+    assert requested_playoff_round("first round") == 1
+    assert requested_playoff_round("last night") is None

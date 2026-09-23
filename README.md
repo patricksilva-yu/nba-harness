@@ -47,12 +47,23 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:3000`.
+Open `http://127.0.0.1:5173`. The dev server forwards `/api` requests (including
+the answer stream) to `NBA_API_PROXY_TARGET`, `http://127.0.0.1:8000` by default;
+set it in `frontend/.env` if the API runs on another port. Asking a question
+requires `alembic upgrade head` for PostgreSQL, because every harness run is
+saved.
+
+The UI is a React app built with Tailwind CSS v4 and the Catalyst UI kit
+(`frontend/src/components/`, from Tailwind Plus). Application code lives in
+`frontend/src/app/`. Add `?config=basic` or `?config=verification` to the URL to
+try a lighter harness configuration during development.
 
 `scripts.nba_agent.web_app:app` remains as a compatibility entrypoint.
 
 ## Modes
 
+- `mcp_harness`: primary mode; custom controller with mandatory MCP, claim
+  verification, targeted investigation, bounded execution and durable traces.
 - `deterministic`: no OpenAI API call; uses local routing and deterministic memo builders.
 - `responses_tools`: transitional prototype; the Responses API calls four
   direct application functions and returns JSON-schema output.
@@ -60,9 +71,10 @@ Open `http://127.0.0.1:3000`.
   over stdio.
 - `remote_responses_mcp`: incomplete remote MCP scaffold.
 
-The next primary mode will be the custom MCP-controlled harness described in
-Architecture V3. Direct function calls are not an acceptable substitute for MCP
-in capstone evaluation runs.
+See [harness operation and design](docs/harness.md) for configuration, API
+examples, evaluation variants and known limits. Apply `alembic upgrade head`
+before using the new harness with PostgreSQL. Direct function calls are not an
+acceptable substitute for MCP in capstone evaluation runs.
 
 ## Model-Facing Tools
 
@@ -75,7 +87,7 @@ The required MCP boundary exposes four preferred task-level tools:
 
 The direct prototype currently mirrors these names. The MCP server is the
 authoritative agent-facing boundary and retains older granular tools temporarily
-for client compatibility; the harness will expose only a versioned allowlist.
+for client compatibility; the harness exposes only a versioned allowlist.
 
 ## Ingestion Jobs
 

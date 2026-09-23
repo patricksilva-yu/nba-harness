@@ -17,14 +17,16 @@ from api.nba_agent.tools import (
     find_decisive_runs,
     get_advanced_game_context,
     get_game_snapshot,
+    get_game_window,
     get_lineup_stints,
+    get_period_summary,
     get_player_game_context,
     get_possession_summary,
     rehydrate_evidence_packet,
 )
 
 
-ANALYSIS_SECTIONS = {"snapshot", "advanced", "runs", "possessions", "players", "lineups"}
+ANALYSIS_SECTIONS = {"snapshot", "periods", "advanced", "runs", "possessions", "players", "lineups"}
 
 
 class NBAService:
@@ -96,6 +98,7 @@ class NBAService:
             raise ValueError(f"Unknown analysis sections: {', '.join(unknown)}")
         loaders = {
             "snapshot": lambda: get_game_snapshot(game_id, self.db_path, persist=persist),
+            "periods": lambda: get_period_summary(game_id, self.db_path, persist=persist),
             "advanced": lambda: get_advanced_game_context(game_id, self.db_path, persist=persist),
             "runs": lambda: find_decisive_runs(game_id, self.db_path, persist=persist),
             "possessions": lambda: get_possession_summary(game_id, self.db_path, persist=persist),
@@ -109,6 +112,17 @@ class NBAService:
             "context": context,
             "evidence_packets": packets,
         }
+
+    def get_game_window(
+        self,
+        game_id: str,
+        period: int,
+        from_clock: str | None = None,
+        to_clock: str = "0:00",
+        end_period: int | None = None,
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        return get_game_window(game_id, period, from_clock, to_clock, end_period, self.db_path, persist=persist)
 
     def get_evidence_detail(self, packet_id: str, game_id: str) -> dict[str, Any]:
         return rehydrate_evidence_packet(packet_id, game_id, self.db_path)

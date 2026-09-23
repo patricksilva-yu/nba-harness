@@ -21,6 +21,7 @@ from sqlalchemy import create_engine, inspect, text
 from api.nba_agent.storage import PostgresStorage, StorageError
 from api.nba_agent.storage.operations import cleanup_expired_raw_responses, storage_health
 from api.nba_agent.storage.repositories import AnalysisRunRepository, EvidenceRepository, IngestionJobRepository
+from api.nba_agent.storage.repositories import HarnessRunRepository
 from api.nba_agent.db import get_storage
 from api.nba_agent.tools import get_box_score
 from api.app import app
@@ -56,6 +57,7 @@ def test_initial_migration_creates_canonical_schema_and_downgrades_cleanly():
             assert set(inspector.get_table_names()) == {
                 "alembic_version",
                 "analysis_runs",
+                "harness_runs",
                 "box_scores_advanced_team",
                 "box_scores_player",
                 "box_scores_team",
@@ -67,7 +69,12 @@ def test_initial_migration_creates_canonical_schema_and_downgrades_cleanly():
                 "raw_responses",
                 "seed_player_game_logs",
             }
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260922_03"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260923_02"
+            harness_columns = {column["name"] for column in inspector.get_columns("harness_runs")}
+            assert {"conversation_id", "parent_run_id"}.issubset(harness_columns)
+            assert any(fk["referred_table"] == "harness_runs" and fk["constrained_columns"] == ["parent_run_id"]
+                       for fk in inspector.get_foreign_keys("harness_runs"))
+            assert "ix_harness_runs_conversation_id" in {item["name"] for item in inspector.get_indexes("harness_runs")}
 
             raw_columns = {column["name"]: column for column in inspector.get_columns("raw_responses")}
             evidence_columns = {column["name"]: column for column in inspector.get_columns("evidence_packets")}
@@ -108,6 +115,18 @@ def test_postgres_storage_executes_parameterized_upserts_and_rolls_back_failures
 
         storage = PostgresStorage(POSTGRES_TEST_URL, schema=schema)
         storage.initialize()
+        harness_repository = HarnessRunRepository(storage)
+        harness_record = {"run_id": "harness_integration", "status": "running", "events": []}
+        harness_repository.create(harness_record)
+        harness_record.update(status="completed", stop_reason="supported", events=[{"sequence": 1, "kind": "run_stopped"}])
+        harness_repository.save(harness_record)
+        assert harness_repository.get("harness_integration") == harness_record
+        follow_up = {"run_id": "harness_follow_up", "status": "running", "question": "Next?", "events": [],
+                     "conversation_id": "harness_integration", "parent_run_id": "harness_integration"}
+        harness_repository.create(follow_up)
+        assert [r["run_id"] for r in harness_repository.conversation("harness_integration")] == ["harness_follow_up"]
+        # The opening run predates conversation ids, so no conversation has a first run to describe.
+        assert harness_repository.recent_conversations() == []
         connection = storage.open(read_only=False)
         connection.execute(
             "INSERT INTO games (game_id, game_date, source) VALUES (?, ?, ?)",

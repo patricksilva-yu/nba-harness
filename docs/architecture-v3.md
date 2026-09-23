@@ -6,6 +6,12 @@
 
 **Supersedes:** [Architecture V2](architecture-v2.md)
 
+**Implementation note (2026-09-23):** The primary `mcp_harness` path now
+implements MCP discovery/execution, bounded control, evidence, verification,
+investigation and durable traces. See [harness operations](harness.md) for the
+implemented contracts, verification limitations and deployment requirements.
+The transition sequence below remains the original design record.
+
 ## Research Question
 
 > Can a custom harness improve how an agent selects, sequences, verifies, and
@@ -142,6 +148,9 @@ The preferred task-level MCP tools remain:
 - `ensure_game_data`
 - `get_game_analysis_context`
 - `get_evidence_detail`
+
+**Update (2026-09-23):** contract `mcp-harness-v3` adds `get_game_window` for
+evidence about a specific stretch of game time. See [harness operations](harness.md).
 
 The MCP server owns the mapping from these stable capabilities to `NBAService`.
 Granular compatibility tools may remain during migration, but the harness uses

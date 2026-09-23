@@ -59,6 +59,17 @@ def create_schema(con: StorageConnection) -> None:
         if version is None:
             raise RuntimeError("PostgreSQL schema is not at an Alembic revision; run `alembic upgrade head`")
         return
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS harness_runs (
+            run_id TEXT PRIMARY KEY, status TEXT NOT NULL, stop_reason TEXT,
+            record_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            updated_at TIMESTAMP DEFAULT current_timestamp,
+            conversation_id TEXT, parent_run_id TEXT
+        )
+    """)
+    for column in ("conversation_id", "parent_run_id"):
+        con.execute(f"ALTER TABLE harness_runs ADD COLUMN IF NOT EXISTS {column} TEXT")
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_responses (

@@ -12,6 +12,19 @@ has no stable primary key in the source and is not part of the normal
 application write path. Its one-time transfer and rerun constraints are
 recorded in [the migration plan](postgresql-migration-plan.md).
 
+Revision `20260923_01` adds `harness_runs`: independently identified run records
+with JSONB checkpoints, constrained status, explicit stopping reason, and
+timezone-aware creation/update timestamps. Runs can exist before a game is
+resolved, so this table deliberately has no game foreign key. A creation-time
+index supports later retention queries. See [harness operations](harness.md).
+
+Revision `20260923_02` links follow-up questions into conversations. It adds
+nullable `conversation_id` and `parent_run_id` columns to `harness_runs`, a
+self-referencing foreign key from `parent_run_id` to `run_id`, and an index on
+`(conversation_id, created_at)` for reading a conversation in order. Runs
+created before this revision keep null values and are not listed as
+conversations.
+
 ## Relationships and deletion policy
 
 `games` is the parent of normalized game data. Its box scores, play-by-play,
