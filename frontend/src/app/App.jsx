@@ -194,6 +194,18 @@ export function App() {
     }
   }
 
+  // A followed team's game opens its shared breakdown; without one yet, a fresh question about the game.
+  async function openBreakdown(game) {
+    if (busy) return
+    let fresh = { ...NEW_CONVERSATION, gameId: game.game_id, gameRow: game }
+    startConversation({ ...fresh, status: 'loading' })
+    try {
+      setConversation({ ...fresh, turns: [turnFromRun(await api.breakdown(game.game_id))] })
+    } catch (error) {
+      setConversation(error.status === 404 ? fresh : { ...fresh, status: 'error', error: error.message })
+    }
+  }
+
   let openPanel = (turnKey, tab, focus = {}) =>
     setPanel({ open: true, turnKey, tab, packetId: focus.packetId ?? null, step: focus.step ?? null })
   let panelTurn = conversation.turns.find((t) => t.key === panel.turnKey && t.result)
@@ -250,7 +262,7 @@ export function App() {
           <TracesList params={route.params} />
         )
       ) : view === 'home' ? (
-        <Home onSelectGame={(g) => startConversation({ gameId: g.game_id, gameRow: g })} />
+        <Home onSelectGame={openBreakdown} />
       ) : view === 'reliability' ? (
         <ReliabilityView />
       ) : (

@@ -44,6 +44,13 @@ owns reads and writes. The home page queries completed games already present in
 `games` for those teams. Favorite selection does not start ingestion or create
 postgame analysis.
 
+Revision `20260924_04` adds `game_pipeline`: one row per followed final with its
+state (`pending`, `loaded`, `analyzed`, `failed`), retry schedule, last error,
+the shared breakdown's `harness_runs` id, and timestamps for when the final was
+seen, its stats were complete and the breakdown was ready. Deleting a game
+removes its row; deleting the breakdown run clears the link. RLS is enabled with
+no policies. See [the post-game pipeline](pipeline.md).
+
 ## Relationships and deletion policy
 
 `games` is the parent of normalized game data. Its box scores, play-by-play,

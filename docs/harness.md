@@ -91,6 +91,12 @@ differs from the parent's game 400. `GET /api/conversations` lists recent
 conversations by their opening question; `GET /api/conversations/{id}` returns
 each run in order with its public events.
 
+A shared post-game breakdown from [the pipeline](pipeline.md) can be followed
+up by any signed-in user. The follow-up inherits the breakdown's game and
+evidence like any follow-up, but starts the user's own conversation instead of
+joining the breakdown's; that conversation lists under the user's question and
+opens with the breakdown first.
+
 ### Game flow
 
 `GET /api/games/{game_id}/flow` returns the score margin (away team's

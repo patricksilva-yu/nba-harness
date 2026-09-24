@@ -21,6 +21,7 @@ from api.nba_agent.harness.model import ResponsesModel
 from api.nba_agent.harness.spans import build_spans, summarize
 from api.nba_agent.storage.repositories import HarnessRunRepository
 from api.nba_agent.storage.favorites import FavoriteTeamsRepository
+from api.nba_agent.storage.pipeline import GamePipelineRepository
 from api.nba_agent.storage import StorageError, storage_health
 from api.nba_agent.tools import (
     find_recent_completed_games,
@@ -92,6 +93,8 @@ def harness_follow_up(request: AskRequest, viewer: Viewer) -> dict | None:
     """Validate a follow-up before any run starts, so failures are plain HTTP errors.
 
     Only the user who started a conversation can continue it; to anyone else it reads as missing.
+    A shared post-game breakdown is open to every user, and following it up starts the
+    user's own conversation.
     """
     if not request.parent_run_id:
         return None
@@ -104,7 +107,9 @@ def harness_follow_up(request: AskRequest, viewer: Viewer) -> dict | None:
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
     if viewer.user_id and context["user_id"] != viewer.user_id:
-        raise HTTPException(status_code=404, detail="Earlier run not found")
+        if context["user_id"] is not None or not GamePipelineRepository(get_storage()).is_breakdown(request.parent_run_id):
+            raise HTTPException(status_code=404, detail="Earlier run not found")
+        context["conversation_id"] = None
     if request.game_id and context["game_id"] and request.game_id != context["game_id"]:
         raise HTTPException(status_code=400, detail="Follow-up questions stay on the earlier run's game")
     return context
@@ -175,13 +180,31 @@ def conversations(limit: int = 20, viewer: Viewer = Depends(require_user)) -> di
 
 @router.get("/api/conversations/{conversation_id}")
 def conversation(conversation_id: str, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
+    runs = HarnessRunRepository(get_storage())
     try:
-        records = HarnessRunRepository(get_storage()).conversation(conversation_id, viewer.user_id)
+        records = runs.conversation(conversation_id, viewer.user_id)
+        # A conversation that followed up a shared breakdown shows the breakdown first.
+        opener = records[0].get("parent_run_id") if records else None
+        if opener and GamePipelineRepository(get_storage()).is_breakdown(opener):
+            records = [record for record in [runs.get(opener)] if record] + records
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
     if not records:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"conversation_id": conversation_id, "runs": [public_run(record) for record in records]}
+
+
+@router.get("/api/games/{game_id}/breakdown")
+def game_breakdown(game_id: str, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
+    """The shared post-game breakdown, shaped like any answer in a conversation."""
+    try:
+        run_id = GamePipelineRepository(get_storage()).breakdown_run_id(game_id)
+        record = HarnessRunRepository(get_storage()).get(run_id) if run_id else None
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="No breakdown for this game yet")
+    return public_run(record)
 
 
 @router.get("/api/runs/{run_id}")
