@@ -27,7 +27,7 @@ function Suggestion({ question, hint, onAsk }) {
   )
 }
 
-export function EmptyState({ game, recentGames, onAsk, onSelectGame }) {
+export function EmptyState({ game, wrongGameQuestion, recentGames, onAsk, onSelectGame }) {
   if (game) {
     return (
       <div className="flex flex-col gap-5 pt-[6vh]">
@@ -53,6 +53,12 @@ export function EmptyState({ game, recentGames, onAsk, onSelectGame }) {
   let latest = recentGames[0]
   return (
     <div className="flex flex-col gap-5 pt-[6vh]">
+      {wrongGameQuestion && (
+        <p className="rounded-lg bg-amber-400/15 px-3.5 py-2.5 text-sm/6 text-zinc-700 dark:bg-amber-400/10 dark:text-zinc-300">
+          Pick the game you meant, then ask again: <span className="font-medium">“{wrongGameQuestion}”</span>. Naming the
+          round or date, like “Game 5 of the Finals”, also helps.
+        </p>
+      )}
       <h2 className="text-2xl/8 font-semibold tracking-tight text-balance text-zinc-950 sm:text-[1.75rem]/9 dark:text-white">
         Ask about any recent game
       </h2>

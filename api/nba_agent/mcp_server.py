@@ -37,20 +37,22 @@ domain = NBAService(Path(os.environ["NBA_MCP_DB_PATH"])) if os.getenv("NBA_MCP_D
 
 @mcp.tool()
 def resolve_game(query: str, season_type: str = "Auto", game_id: str | None = None, season: str | None = None) -> dict:
-    """Resolve a natural-language completed NBA game reference. Read-only and safe to retry."""
+    """Identify a completed NBA game from a question or game ID.
+    Use when the game has not yet been resolved."""
     return domain.resolve_game(query, game_id=game_id, season=season, season_type=season_type)
 
 
 @mcp.tool()
 def ensure_game_data(game_id: str, season_type: str = "Playoffs", season: str | None = None) -> dict:
-    """Ensure official data for a game is cached. May use the network and is safe to retry."""
+    """Check cached game data and fetch missing official NBA data.
+    Use after resolving a game, before requesting analysis evidence."""
     return domain.ensure_game_data(game_id, season=season, season_type=season_type)
 
 
 Section = Literal["snapshot", "periods", "runs", "players", "advanced", "possessions", "lineups"]
 
 SECTIONS_HELP = """Request only the sections the question needs. Each returns evidence packets:
-- snapshot: final score.
+- snapshot: final score and both teams' traditional box-score totals, including shooting and assists.
 - periods: points per quarter/overtime, score and leader at each break, each team's largest lead
   with its clock time, lead changes and ties. Start here for leads, comebacks and "which quarter".
 - runs: the top three scoring stretches, each with start/end clock, start/end score and margin change.
@@ -67,8 +69,8 @@ def get_game_analysis_context(
     game_id: str,
     sections: Annotated[list[Section], Field(min_length=1, description=SECTIONS_HELP)],
 ) -> dict:
-    """Return evidence packets for chosen sections of one cached game. Overview data: use it to find
-    where the game turned, then get_game_window for what happened in that stretch."""
+    """Return summary evidence for selected sections of a cached game.
+    Use for the final score, game flow, player performance, or team statistics."""
     result = domain.get_analysis_context(game_id, sections=sections, persist=False)
     EvidenceRepository(get_storage(domain.db_path)).save_many(game_id, result["evidence_packets"])
     return result
@@ -85,9 +87,9 @@ def get_game_window(
     to_clock: Clock = "0:00",
     end_period: Annotated[int | None, Field(ge=1, le=10, description="Period where the window ends; omit for the same period.")] = None,
 ) -> dict:
-    """What happened in one stretch of game time, as a single evidence packet: score before and after,
-    points per team, team shooting and turnovers, per-player points and shooting, and the plays.
-    Use it for questions like "last five minutes", "start of the third" or a run's window."""
+    """Return plays, score changes, and team and player statistics for a time window in a cached game.
+    Use to examine a quarter, scoring stretch, or late-game sequence. A reversed or invalid window returns
+    summary.resolution_status "invalid_window" and no packets; an empty window returns a low-confidence packet."""
     result = domain.get_game_window(game_id, period, from_clock, to_clock, end_period)
     EvidenceRepository(get_storage(domain.db_path)).save_many(game_id, result["evidence_packets"])
     return result
@@ -95,8 +97,8 @@ def get_game_window(
 
 @mcp.tool()
 def get_evidence_detail(packet_id: str, game_id: str) -> dict:
-    """Rehydrate one evidence packet into its supporting detail. For a scoring-run packet this
-    includes every described play in the run and per-player points and shooting for the run."""
+    """Return supporting detail for a previously retrieved evidence packet, including plays and player scoring for runs.
+    Use when a packet's summary needs closer inspection."""
     return domain.get_evidence_detail(packet_id, game_id)
 
 

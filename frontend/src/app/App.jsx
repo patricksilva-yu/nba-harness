@@ -5,9 +5,12 @@ import { AppShell } from './AppShell'
 import { AppSidebar, BrandMark } from './AppSidebar'
 import { Composer } from './Composer'
 import { EmptyState } from './EmptyState'
-import { GameHeader } from './GameHeader'
+import { formatGameDate, GameHeader } from './GameHeader'
 import { Inspector } from './Inspector'
 import { ReliabilityView } from './ReliabilityView'
+import { navigate, useLocation } from './router'
+import { TraceDetail } from './traces/TraceDetail'
+import { TracesList } from './traces/TracesList'
 import { firstRunWindow, Turn } from './Turn'
 
 // Fans always get the full harness; ?config=basic|verification is for development.
@@ -42,6 +45,11 @@ function useGameFlow(gameId, version) {
   return flow
 }
 
+function gameLabel(game) {
+  let score = `${game.away} ${game.awayScore} @ ${game.home} ${game.homeScore}`
+  return [score, game.stage, formatGameDate(game.date)].filter(Boolean).join(' · ')
+}
+
 function describeGame(gameId, flow, row, resolution) {
   if (!gameId) return null
   let stage = (seasonType, number) => (seasonType === 'Playoffs' ? (number ? `Playoffs · Game ${number}` : 'Playoffs') : null)
@@ -55,7 +63,11 @@ function describeGame(gameId, flow, row, resolution) {
 }
 
 export function App() {
-  let [view, setView] = useState('ask')
+  let route = useLocation()
+  let [section, setView] = useState('ask')
+  // Traces are URL-addressed (/traces, /traces/:runId); the other views are app state.
+  let traceRoute = route.path.match(/^\/traces(?:\/([^/]+))?\/?$/)
+  let view = traceRoute ? 'traces' : section
   let [games, setGames] = useState({ status: 'loading', items: [] })
   let [conversations, setConversations] = useState({ status: 'loading', items: [] })
   let [conversation, setConversation] = useState(NEW_CONVERSATION)
@@ -132,12 +144,16 @@ export function App() {
   function startConversation(next) {
     if (busy) return
     setView('ask')
+    navigate('/')
     setPanel((p) => ({ ...p, open: false }))
     setConversation({ ...NEW_CONVERSATION, ...next })
   }
 
   async function openConversation(id) {
-    if (busy || id === conversation.id) return setView('ask')
+    if (busy || id === conversation.id) {
+      navigate('/')
+      return setView('ask')
+    }
     startConversation({ id, status: 'loading' })
     try {
       let data = await api.conversation(id)
@@ -172,6 +188,7 @@ export function App() {
           currentConversationId={conversation.id}
           onView={(v) => {
             setView(v)
+            navigate('/')
             setPanel((p) => ({ ...p, open: false }))
           }}
           onNewQuestion={() => startConversation({})}
@@ -179,7 +196,7 @@ export function App() {
           onSelectConversation={openConversation}
         />
       }
-      panelOpen={panel.open && !!panelTurn}
+      panelOpen={view === 'ask' && panel.open && !!panelTurn}
       onClosePanel={() => setPanel((p) => ({ ...p, open: false }))}
       panel={
         panelTurn && (
@@ -194,7 +211,13 @@ export function App() {
         )
       }
     >
-      {view === 'reliability' ? (
+      {view === 'traces' ? (
+        traceRoute[1] ? (
+          <TraceDetail key={traceRoute[1]} runId={decodeURIComponent(traceRoute[1])} params={route.params} />
+        ) : (
+          <TracesList params={route.params} />
+        )
+      ) : view === 'reliability' ? (
         <ReliabilityView />
       ) : (
         <>
@@ -206,6 +229,7 @@ export function App() {
             )}
             {conversation.status === 'ready' && conversation.turns.length === 0 && (
               <EmptyState
+                wrongGameQuestion={conversation.wrongGameQuestion}
                 game={game}
                 recentGames={games.items}
                 onAsk={(q) => ask(q)}
@@ -216,8 +240,10 @@ export function App() {
               <Turn
                 key={turn.key}
                 turn={turn}
+                gameLabel={turn.key === conversation.turns[0].key && game ? gameLabel(game) : null}
+                onWrongGame={() => startConversation({ wrongGameQuestion: turn.question })}
                 flow={flow}
-                showChart={turn.key === firstAnswered || Boolean(turn.result && firstRunWindow(turn.result))}
+                showChart={turn.key === (firstAnswered ?? conversation.turns[0]?.key) || Boolean(turn.result && firstRunWindow(turn.result))}
                 activePacket={panel.open && panel.turnKey === turn.key ? panel.packetId : null}
                 busy={busy}
                 onOpenStep={(step) => openPanel(turn.key, 'steps', { step })}
@@ -231,6 +257,11 @@ export function App() {
           </div>
           {conversation.status !== 'loading' && (
             <Composer
+              hint={
+                conversation.turns.length && game
+                  ? `Follow-ups stay on ${game.away} @ ${game.home}. For another game, start a New question.`
+                  : null
+              }
               disabled={busy}
               placeholder={
                 conversation.turns.length ? 'Ask a follow-up…' : game ? `Ask about this game…` : 'Ask about any recent game…'

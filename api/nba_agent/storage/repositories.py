@@ -103,6 +103,45 @@ class HarnessRunRepository:
         return conversations
 
 
+    def list_runs(self, limit: int = 50, offset: int = 0, search: str | None = None, status: str | None = None,
+                  stop_reason: str | None = None, conversation_id: str | None = None) -> tuple[list[dict], int]:
+        """Newest runs first as (summaries, total matching). Reads only summary fields, not whole records."""
+        clauses, params = [], []
+        if search:
+            clauses.append("(record_json->>'question' ILIKE ? OR run_id = ?)")
+            params += [f"%{search}%", search]
+        for column, value in (("status", status), ("stop_reason", stop_reason), ("conversation_id", conversation_id)):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        connection = self._storage.open()
+        try:
+            total = connection.execute(f"SELECT COUNT(*) FROM harness_runs {where}", params).fetchone()[0]
+            rows = connection.execute(
+                f"""SELECT run_id, status, stop_reason, created_at, conversation_id, parent_run_id,
+                record_json->>'question', record_json->>'model', record_json->>'configuration',
+                record_json->>'game_id', record_json->'resolution'->>'label', record_json->>'openai_trace_id',
+                record_json->>'elapsed_seconds', record_json->'usage'->>'input_tokens',
+                record_json->'usage'->>'output_tokens', record_json->'usage'->>'model_turns',
+                record_json->'usage'->>'tool_calls'
+                FROM harness_runs {where} ORDER BY created_at DESC, run_id DESC LIMIT ? OFFSET ?""",
+                [*params, limit, offset],
+            ).fetchall()
+        finally:
+            connection.close()
+        number = lambda value, kind: kind(value) if value not in (None, "") else None
+        runs = [{
+            "run_id": row[0], "status": row[1], "stop_reason": row[2],
+            "created_at": row[3].isoformat() if hasattr(row[3], "isoformat") else row[3],
+            "conversation_id": row[4], "parent_run_id": row[5], "question": row[6], "model": row[7],
+            "configuration": row[8], "game_id": row[9], "game_label": row[10], "openai_trace_id": row[11],
+            "duration_seconds": number(row[12], float), "input_tokens": number(row[13], int),
+            "output_tokens": number(row[14], int), "model_turns": number(row[15], int), "tool_calls": number(row[16], int),
+        } for row in rows]
+        return runs, total
+
+
 class EvidenceRepository:
     def __init__(self, storage: StorageBackend) -> None:
         self._storage = storage

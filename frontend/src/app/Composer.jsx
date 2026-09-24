@@ -2,7 +2,7 @@ import { ArrowUpIcon } from '@heroicons/react/20/solid'
 import { useRef, useState } from 'react'
 import { Button } from '../components/button'
 
-export function Composer({ placeholder, disabled, onSubmit }) {
+export function Composer({ placeholder, hint, disabled, onSubmit }) {
   let [value, setValue] = useState('')
   let ref = useRef(null)
   let ready = !disabled && value.trim().length >= 3
@@ -50,7 +50,7 @@ export function Composer({ placeholder, disabled, onSubmit }) {
         </Button>
       </form>
       <p className="mx-auto mt-1.5 flex max-w-3xl flex-wrap justify-between gap-x-3 text-xs text-zinc-500 dark:text-zinc-400">
-        <span>Every claim is fact-checked against the game data before you see it.</span>
+        <span>{hint ?? 'Every claim is fact-checked against the game data before you see it.'}</span>
         <span className="max-sm:hidden">Enter to ask · Shift+Enter for a new line</span>
       </p>
     </div>

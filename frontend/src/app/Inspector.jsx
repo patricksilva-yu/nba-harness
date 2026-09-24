@@ -266,6 +266,20 @@ export function Inspector({ turn, tab, focusPacket, focusStep, onTab, onClose })
                 </DescriptionDetails>
                 <DescriptionTerm>Mode</DescriptionTerm>
                 <DescriptionDetails className="sm:text-right">{CONFIGURATIONS[result.configuration] ?? result.configuration}</DescriptionDetails>
+                {result.openai_trace_id && (
+                  <>
+                    <DescriptionTerm>OpenAI trace</DescriptionTerm>
+                    <DescriptionDetails className="break-all font-mono text-xs sm:text-right">
+                      {result.openai_trace_id}
+                    </DescriptionDetails>
+                    <DescriptionTerm>OpenAI logs</DescriptionTerm>
+                    <DescriptionDetails className="sm:text-right">
+                      <a className="underline underline-offset-2" href="https://platform.openai.com/logs" target="_blank" rel="noreferrer">
+                        Open logs
+                      </a>
+                    </DescriptionDetails>
+                  </>
+                )}
               </DescriptionList>
             ) : (
               <p className="text-sm text-zinc-500">Usage appears when the run finishes.</p>

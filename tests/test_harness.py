@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+from contextlib import contextmanager
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -144,6 +146,20 @@ def test_verification_repairs_bad_claim(tmp_path):
     assert result["trace"]["reviews"][0]["findings"][0]["classification"] == "unsupported"
 
 
+def test_revision_reuses_ledger_without_replaying_tool_transcripts(tmp_path):
+    model = ScriptedModel([*preparation(), answer("AWY scored 999."), review("unsupported"), answer(), review()])
+    result = asyncio.run(run_harness("Who won?", game_id="g1", configuration="verification",
+                                     db_path=tmp_path / "trace.duckdb", model=model,
+                                     mcp_client=Client(server())))
+
+    assert result["stop_reason"] == "supported"
+    revision_history = model.requests[5]["history"]
+    assert len(revision_history) == 1
+    context = json.loads(revision_history[0]["content"])
+    assert context["evidence_ledger"]["p1"]["packet"]["metrics"]["away_score"] == 101
+    assert context["harness_feedback"]["review"]["findings"][0]["classification"] == "unsupported"
+
+
 def test_investigation_gathers_mcp_detail_then_reverifies(tmp_path):
     result = run(tmp_path, [*preparation(), answer(), review("insufficient", "Check the underlying score."),
         call("get_evidence_detail", game_id="g1", packet_id="p1"), answer(), review()])
@@ -188,6 +204,47 @@ def test_budgets_are_enforced(tmp_path, limits, reason):
     assert result["stop_reason"] == reason
     assert result["trace"]["events"][-1]["reason"] == reason
     assert not result["analysis"]["claims"]
+
+
+def test_large_evidence_uses_token_estimate_not_byte_count(tmp_path):
+    packet = {**PACKET, "claim_seed": "x" * 45_000}
+    result = run(tmp_path, [*preparation(), answer(), review()],
+                 limits=Limits(total_tokens=50_000), mcp=server(packet=packet))
+    assert result["stop_reason"] == "supported"
+
+
+def test_streaming_model_gets_openai_trace_when_supplied_by_route(tmp_path, monkeypatch):
+    from api.nba_agent.harness import controller
+
+    class ProvidedResponsesModel(ScriptedModel):
+        pass
+
+    traces = []
+    spans = []
+
+    @contextmanager
+    def fake_trace(name, **kwargs):
+        traces.append((name, kwargs))
+        yield
+
+    @contextmanager
+    def fake_span(name, data):
+        spans.append(name)
+        yield SimpleNamespace(span_data=SimpleNamespace(data=data))
+
+    monkeypatch.setattr(controller, "ResponsesModel", ProvidedResponsesModel)
+    monkeypatch.setattr(controller, "gen_trace_id", lambda: "trace_" + "1" * 32)
+    monkeypatch.setattr(controller, "trace", fake_trace)
+    monkeypatch.setattr(controller, "custom_span", fake_span)
+    result = asyncio.run(run_harness("Who won?", game_id="g1", db_path=tmp_path / "trace.duckdb",
+                                     model=ProvidedResponsesModel([*preparation(), answer(), review()]),
+                                     mcp_client=Client(server())))
+
+    assert result["openai_trace_id"] == "trace_" + "1" * 32
+    assert traces[0][1]["metadata"]["run_id"] == result["analysis_run_id"]
+    assert "MCP get_game_analysis_context" in spans
+    assert "Verify claims" in spans
+    assert "Run outcome" in spans
 
 
 def test_unresolved_game_persists_failure_without_model_guess(tmp_path):
@@ -327,7 +384,7 @@ def test_cancellation_is_persisted(tmp_path):
     asyncio.run(scenario())
 
 
-def test_responses_adapter_uses_stateless_schema_constrained_requests():
+def test_responses_adapter_stores_schema_constrained_requests_for_logs():
     import httpx
     from openai import AsyncOpenAI
     from api.nba_agent.harness.model import ResponsesModel
@@ -357,7 +414,7 @@ def test_responses_adapter_uses_stateless_schema_constrained_requests():
             await model.close()
 
     asyncio.run(scenario())
-    assert sent[0]["store"] is False
+    assert sent[0]["store"] is True
     assert sent[0]["include"] == ["reasoning.encrypted_content"]
     assert sent[0]["text"]["format"]["strict"] is True
     assert sent[0]["parallel_tool_calls"] is False
@@ -563,3 +620,61 @@ def test_window_evidence_can_back_a_claim(tmp_path):
     result = run(tmp_path, steps)
     assert result["stop_reason"] == "supported"
     assert result["trace"]["evidence"]["window_4"]["tool"] == "get_game_window"
+
+
+
+def test_trace_spans_nest_calls_under_run_and_verification(tmp_path):
+    from api.nba_agent.harness.spans import build_spans
+
+    result = run(tmp_path, [*preparation(), answer("AWY scored 999."), review("unsupported"), answer(), review()],
+                 config="verification")
+    spans = build_spans(result["trace"])
+    by_id = {s["span_id"]: s for s in spans}
+    parent = lambda s: by_id[s["parent_id"]]["name"] if s["parent_id"] else None
+    root = spans[0]
+    assert root["name"] == "NBA MCP Harness" and root["attributes"]["run_id"] == result["analysis_run_id"]
+    assert root["tokens"] == {"input": 700, "output": 350}
+    tools = [s for s in spans if s["type"] == "tool"]
+    assert [s["name"] for s in tools] == ["MCP resolve_game", "MCP ensure_game_data", "MCP get_game_analysis_context"]
+    assert all(parent(s) == "NBA MCP Harness" and s["outputs"]["summary"] for s in tools)
+    verifies = [s for s in spans if s["type"] == "verify"]
+    assert [s["status"] for s in verifies] == ["warning", "ok"]
+    checks = [s for s in spans if s["name"] == "Fact-check model"]
+    assert [parent(s) for s in checks] == ["Verify claims", "Verify claims"]
+    assert all(s["end"] >= s["start"] for s in spans)
+    assert next(s for s in spans if s["name"] == "answer_drafted")["outputs"]["draft"]["claims"]
+
+
+def test_interrupted_run_leaves_open_spans_visible(tmp_path):
+    from api.nba_agent.harness.spans import build_spans
+
+    record = {"run_id": "r", "status": "running", "events": [
+        {"kind": "model_requested", "elapsed_seconds": 1, "purpose": "decision", "input": []}]}
+    spans = build_spans(record)
+    assert [s["status"] for s in spans] == ["running", "running"]
+    assert spans[1]["end"] == 1
+
+
+def test_traces_api_lists_filters_and_details_runs(tmp_path, monkeypatch):
+    path = tmp_path / "trace.duckdb"
+    supported = run(tmp_path, [*preparation(), answer(), review()])
+    stopped = run(tmp_path, [call("resolve_game", game_id="other")])
+    monkeypatch.setattr("api.routes.get_storage", lambda: get_storage(path))
+    client = TestClient(app)
+
+    listed = client.get("/api/traces").json()
+    assert listed["total"] == 2
+    assert [t["run_id"] for t in listed["traces"]] == [stopped["analysis_run_id"], supported["analysis_run_id"]]
+    row = listed["traces"][1]
+    assert row["question"] == "Who won?" and row["input_tokens"] == 500 and row["tool_calls"] == 3
+    assert row["duration_seconds"] > 0 and row["created_at"]
+    only = client.get("/api/traces", params={"stop_reason": "supported"}).json()
+    assert [t["run_id"] for t in only["traces"]] == [supported["analysis_run_id"]]
+    assert client.get("/api/traces", params={"q": "WHO WON"}).json()["total"] == 2
+    assert client.get("/api/traces", params={"q": supported["analysis_run_id"]}).json()["total"] == 1
+    assert client.get("/api/traces", params={"limit": 1, "offset": 1}).json()["traces"][0]["run_id"] == supported["analysis_run_id"]
+
+    detail = client.get("/api/traces/" + supported["analysis_run_id"]).json()
+    assert detail["trace"]["stop_reason"] == "supported"
+    assert detail["spans"][0]["name"] == "NBA MCP Harness"
+    assert client.get("/api/traces/missing").status_code == 404

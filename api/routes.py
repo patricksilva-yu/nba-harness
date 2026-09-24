@@ -19,6 +19,7 @@ from api.nba_agent.responses_agent import run_responses_agent
 from api.nba_agent.harness import FollowUpError, follow_up_context, public_run, run_harness
 from api.nba_agent.harness.contracts import Limits
 from api.nba_agent.harness.model import ResponsesModel
+from api.nba_agent.harness.spans import build_spans, summarize
 from api.nba_agent.storage.repositories import HarnessRunRepository
 from api.nba_agent.storage import StorageError, storage_health
 from api.nba_agent.tools import (
@@ -135,6 +136,28 @@ def harness_run(run_id: str) -> dict[str, Any]:
     if record is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return record
+
+
+@router.get("/api/traces")
+def traces(limit: int = 50, offset: int = 0, q: str | None = None, status: str | None = None,
+           stop_reason: str | None = None, conversation_id: str | None = None) -> dict[str, Any]:
+    try:
+        runs, total = HarnessRunRepository(get_storage()).list_runs(
+            min(max(limit, 1), 200), max(offset, 0), (q or "").strip() or None, status, stop_reason, conversation_id)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
+    return {"traces": runs, "total": total}
+
+
+@router.get("/api/traces/{run_id}")
+def trace_detail(run_id: str) -> dict[str, Any]:
+    try:
+        record = HarnessRunRepository(get_storage()).get(run_id)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"trace": summarize(record), "spans": build_spans(record)}
 
 
 @router.post("/api/ingestion-jobs", status_code=202)

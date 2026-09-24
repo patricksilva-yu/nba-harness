@@ -201,6 +201,15 @@ def requested_game_date(query: str, today: date | None = None) -> str | None:
     return None
 
 
+def requests_latest_game(query: str) -> bool:
+    """'Last game', 'latest', 'most recent outing': pick the newest match instead of asking."""
+    text = query.lower()
+    return bool(
+        re.search(r"\b(?:latest|most recent)\b", text)
+        or re.search(r"\blast(?:\s+\S+){0,2}?\s+(?:game|match|outing)\b", text)
+    )
+
+
 def requested_playoff_game_number(query: str) -> int | None:
     match = re.search(r"\bgame\s+([1-7])\b", query.lower())
     if not match:
@@ -263,6 +272,13 @@ def resolve_game_reference(
     limit: int = 20,
     timeout: int = 20,
 ) -> dict[str, Any]:
+    requested_year_match = re.search(r"\b(?:19|20)\d{2}\b", query)
+    requested_year = int(requested_year_match.group()) if requested_year_match else None
+    requested_game_number = requested_playoff_game_number(query)
+    # A numbered playoff game in a calendar year belongs to the season that
+    # started the previous fall. Do not let a current-season lookup win by date.
+    if requested_year and requested_game_number and (season is None or season == str(requested_year)):
+        season = f"{requested_year - 1}-{str(requested_year)[-2:]}"
     # Resolution needs a deeper source window than the display limit. Otherwise
     # an older playoff game can be missed after later rounds add more games.
     source_limit = max(limit, 120)
@@ -275,9 +291,9 @@ def resolve_game_reference(
     games = recent.get("games", [])
     matched_teams = matching_team_abbrs(query)
     requested_date = requested_game_date(query)
-    requested_game_number = requested_playoff_game_number(query)
     requested_round = requested_playoff_round(query)
-    preference = "exact_date_match" if requested_date else "disambiguate_repeated_matchups"
+    latest = not requested_date and requests_latest_game(query)
+    preference = "exact_date_match" if requested_date else "latest_game" if latest else "disambiguate_repeated_matchups"
 
     candidates = []
     for game in games:
@@ -292,6 +308,8 @@ def resolve_game_reference(
 
     if requested_date:
         candidates = [candidate for candidate in candidates if str(candidate["game_date"])[:10] == requested_date]
+    elif requested_year:
+        candidates = [candidate for candidate in candidates if str(candidate["game_date"])[:4] == str(requested_year)]
 
     if (requested_game_number or requested_round) and matched_teams:
         series_candidates = number_series_games([
@@ -355,7 +373,8 @@ def resolve_game_reference(
         for candidate in same_score_candidates
         if same_matchup(candidate, selected)
     ]
-    if not requested_date and matched_teams and len(repeated_matchup_candidates) > 1:
+    # Candidates are newest first, so a request for the latest game is already resolved.
+    if not requested_date and not latest and matched_teams and len(repeated_matchup_candidates) > 1:
         return {
             "summary": {
                 "resolution_status": "ambiguous",
@@ -607,6 +626,7 @@ def get_game_snapshot(
         "metrics": {
             "away_score": game_row["away_score"],
             "home_score": game_row["home_score"],
+            "team_box": team_rows,
         },
     }
     con.close()

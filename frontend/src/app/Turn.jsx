@@ -222,6 +222,24 @@ function FollowUpHook({ question, disabled, onAsk }) {
   )
 }
 
+function GameChip({ label, onWrongGame }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-zinc-500 dark:text-zinc-400">
+      <span>
+        Answering about <span className="font-medium text-zinc-800 tabular-nums dark:text-zinc-200">{label}</span>
+      </span>
+      <span aria-hidden="true">·</span>
+      <button
+        type="button"
+        onClick={onWrongGame}
+        className="underline decoration-zinc-400/60 underline-offset-3 hover:text-zinc-950 dark:hover:text-white"
+      >
+        Wrong game?
+      </button>
+    </div>
+  )
+}
+
 function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork, onAsk }) {
   let result = turn.result
   let analysis = result.analysis ?? {}
@@ -284,16 +302,26 @@ function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork,
       )}
 
       {answered ? (
-        <div className="flex max-w-[66ch] flex-col gap-3.5 text-base/7 text-zinc-800 dark:text-zinc-200">
-          {claims.map((claim, i) => (
-            <div key={i}>
-              <p>
-                <ClaimText text={claim.text} /> {claim.packet_ids.map(cite)}
-              </p>
-              {claim.follow_up && <FollowUpHook question={claim.follow_up} disabled={busy} onAsk={onAsk} />}
+        <>
+          {/* Claims are written to read as one account; each keeps its own citations. */}
+          <p className="max-w-[66ch] text-base/7 text-zinc-800 dark:text-zinc-200">
+            {claims.map((claim, i) => (
+              <span key={i}>
+                <ClaimText text={claim.text} /> {claim.packet_ids.map(cite)}{' '}
+              </span>
+            ))}
+          </p>
+          {claims.some((c) => c.follow_up) && (
+            <div className="flex flex-col">
+              <span className="text-xs/5 font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">Dig deeper</span>
+              {claims
+                .filter((c) => c.follow_up)
+                .map((c) => (
+                  <FollowUpHook key={c.follow_up} question={c.follow_up} disabled={busy} onAsk={onAsk} />
+                ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       ) : (
         <p className="max-w-[66ch] text-base/7 text-zinc-800 dark:text-zinc-200">
           {result.stop_reason === 'insufficient_evidence'
@@ -329,13 +357,22 @@ function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork,
   )
 }
 
-export function Turn({ turn, flow, showChart, activePacket, busy, onOpenStep, onCite, onShowWork, onAsk, onStop, onRetry }) {
+export function Turn({ turn, gameLabel, flow, showChart, activePacket, busy, onOpenStep, onCite, onShowWork, onAsk, onStop, onRetry, onWrongGame }) {
+  let running = turn.status === 'running'
   return (
     <section id={`turn-${turn.key}`} className="flex scroll-mt-20 flex-col gap-3.5">
       <div className="max-w-[min(34rem,88%)] self-end rounded-2xl rounded-br-md bg-zinc-950 px-4 py-2.5 text-[15px]/6 text-white dark:bg-zinc-700">
         {turn.question}
       </div>
-      {(turn.events.length > 0 || turn.status === 'running') && <RunSteps turn={turn} onOpenStep={onOpenStep} onStop={onStop} />}
+      {gameLabel && <GameChip label={gameLabel} onWrongGame={onWrongGame} />}
+      {(turn.events.length > 0 || running) && <RunSteps turn={turn} onOpenStep={onOpenStep} onStop={onStop} />}
+      {/* Show the game as soon as it is known, so the wait already carries context. */}
+      {running && showChart && flow?.status === 'ok' && (
+        <figure className="rounded-xl p-4 ring-1 ring-zinc-950/10 dark:ring-white/10">
+          <figcaption className="mb-2 text-sm/6 font-semibold text-zinc-950 dark:text-white">Score margin, whole game</figcaption>
+          <GameFlowChart flow={flow} />
+        </figure>
+      )}
       {turn.status === 'done' && turn.result && (
         <Answer
           turn={turn}

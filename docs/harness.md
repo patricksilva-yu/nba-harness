@@ -30,6 +30,30 @@ packet is returned. The response includes `analysis.headline`,
 retrieves the durable record. The existing deterministic and direct Responses
 modes remain explicitly labelled development prototypes.
 
+The primary harness stores its Responses API calls in the OpenAI project logs
+and emits an Agents SDK trace for each run, including streamed requests. The trace groups model decisions,
+MCP calls, and fact-checks under the `NBA MCP Harness` workflow. The app's
+**Show your work → Time & cost** panel displays the OpenAI trace ID, and the
+saved run includes `openai_trace_id` for searching in OpenAI Logs. Select the
+OpenAI project associated with the app's API key. OpenAI logging requires a
+project whose data retention policy permits stored responses and traces; the
+app's PostgreSQL run record remains the complete local audit trail.
+
+### Traces page
+
+The app's **Traces** page (`/traces`) is the developer view of every saved run.
+It lists runs newest first with outcome, game, duration, tokens and turn/tool
+counts, searchable by question or run ID and filterable by outcome, status and
+conversation. `/traces/{run_id}` shows the run as a span tree with a timeline:
+model decisions and fact-checks (with their full inputs and outputs, as a chat
+view or JSON), MCP calls with arguments and results, verification and
+investigation groups, and harness events such as rejected drafts. Selecting a
+span updates the URL (`?span=`), so any step can be linked. The page reads the
+existing run records through `GET /api/traces` and `GET /api/traces/{run_id}`;
+it needs no separate tracing service or storage, and it includes runs saved
+before it existed. Static hosting must rewrite unknown paths to `index.html`
+(`frontend/public/staticwebapp.config.json` does this for Azure Static Web Apps).
+
 ### Streaming progress
 
 `POST /api/ask/stream` accepts the same body as `/api/ask` (harness mode only)
@@ -108,6 +132,8 @@ are explicit failures; earlier evidence is not overwritten. Empty results,
 repeated evidence and rejected calls contribute to the no-progress counter.
 Three consecutive steps without progress stop the run. A successful resolve,
 cache preparation, new packet or new detail constitutes progress.
+After a failed fact-check, the next decision receives one compact copy of the
+evidence ledger and review feedback, rather than the earlier full tool transcript.
 
 ## Answer contract
 
@@ -141,7 +167,7 @@ schema, so the model sees what each returns and what it cannot answer.
 | --- | --- |
 | `periods` section | Points per period, score and leader at each break, each team's largest lead with its clock time, lead changes and ties |
 | `runs` section | The top three scoring stretches with start/end clock, score and margin change |
-| `snapshot`, `players`, `advanced`, `possessions`, `lineups` | Final score, leading box-score lines, team efficiency, whole-game event counts, low-confidence rotation counts |
+| `snapshot`, `players`, `advanced`, `possessions`, `lineups` | Final score and traditional team box score, leading player lines, team efficiency, whole-game event counts, low-confidence rotation counts |
 | `get_game_window(game_id, period, from_clock, to_clock, end_period)` | One packet for any stretch of game time: score before and after, points, shooting and turnovers per team, per-player points and shooting, and the plays (scoring plays and turnovers only for very long windows) |
 | `get_evidence_detail` on a run | The run's plays plus per-player totals for the run |
 
@@ -178,6 +204,10 @@ semantic security guarantee.
 ## Budgets and recovery
 
 Every field of `Limits` can be configured with `NBA_HARNESS_<UPPERCASE_FIELD>`.
+The token preflight estimates tokens from request bytes and reserves space for
+instructions and output; completed model calls are charged using the provider's
+reported token usage. This keeps large game evidence from exhausting the run
+budget solely because JSON byte length exceeds its token count.
 
 | Field | Default |
 | --- | ---: |
@@ -188,7 +218,7 @@ Every field of `Limits` can be configured with `NBA_HARNESS_<UPPERCASE_FIELD>`.
 | `retries` | 1 |
 | `seconds` | 180 |
 | `operation_seconds` | 45 |
-| `total_tokens` | 100000 |
+| `total_tokens` | 200000 |
 | `output_tokens` per request | 4000 |
 
 The controller preflights each model request using a conservative UTF-8 byte

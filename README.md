@@ -78,14 +78,15 @@ acceptable substitute for MCP in capstone evaluation runs.
 
 ## Model-Facing Tools
 
-The required MCP boundary exposes four preferred task-level tools:
+The primary MCP harness uses five task-level tools:
 
 - `resolve_game`
 - `ensure_game_data`
 - `get_game_analysis_context`
+- `get_game_window`
 - `get_evidence_detail`
 
-The direct prototype currently mirrors these names. The MCP server is the
+The direct prototype uses these tools except `get_game_window`. The MCP server is the
 authoritative agent-facing boundary and retains older granular tools temporarily
 for client compatibility; the harness exposes only a versioned allowlist.
 

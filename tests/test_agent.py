@@ -86,6 +86,7 @@ def test_snapshot_claim_uses_actual_winner():
     snapshot = get_game_snapshot("0042500316", persist=False)
 
     assert snapshot["evidence_packets"][0]["claim_seed"] == "SAS defeated OKC 118-91."
+    assert {row["team_abbr"] for row in snapshot["evidence_packets"][0]["metrics"]["team_box"]} == {"SAS", "OKC"}
 
 
 def test_box_score_tool_returns_team_rows():
@@ -152,6 +153,50 @@ def test_resolution_returns_ambiguous_for_repeated_matchup_without_date(monkeypa
     assert len(resolution["candidates"]) >= 2
 
 
+def test_resolution_picks_newest_game_when_latest_is_requested(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "find_recent_completed_games_for_resolution",
+        lambda **_: {
+            "summary": {"searched_season_types": ["Playoffs"], "count": 2},
+            "games": [
+                {
+                    "game_id": "1",
+                    "game_date": "2026-05-25",
+                    "label": "NYK 130, CLE 93",
+                    "home_team_abbr": "CLE",
+                    "away_team_abbr": "NYK",
+                    "home_score": 93,
+                    "away_score": 130,
+                },
+                {
+                    "game_id": "2",
+                    "game_date": "2026-05-23",
+                    "label": "NYK 121, CLE 108",
+                    "home_team_abbr": "CLE",
+                    "away_team_abbr": "NYK",
+                    "home_score": 108,
+                    "away_score": 121,
+                },
+            ],
+            "source_status": [],
+            "warnings": [],
+        },
+    )
+    for query in ("Why did the Knicks win their last game?", "Knicks latest game", "most recent Knicks Cavs game"):
+        resolution = resolve_game_reference(query, season_type="Auto")
+        assert resolution["summary"]["resolution_status"] == "resolved", query
+        assert resolution["summary"]["game_id"] == "1", query
+        assert resolution["summary"]["preference"] == "latest_game", query
+
+
+def test_latest_game_phrases():
+    assert tools.requests_latest_game("How did the Knicks do in their last game")
+    assert tools.requests_latest_game("Knicks last playoff game")
+    assert not tools.requests_latest_game("Who scored in the last quarter of Knicks Cavs")
+    assert not tools.requests_latest_game("Knicks Cavs game 6")
+
+
 def test_resolution_searches_deeper_than_display_limit(monkeypatch):
     requested_limits = []
 
@@ -181,6 +226,32 @@ def test_resolution_searches_deeper_than_display_limit(monkeypatch):
     assert requested_limits == [120]
     assert resolution["summary"]["resolution_status"] == "resolved"
     assert resolution["summary"]["game_id"] == "0042500207"
+
+
+@pytest.mark.parametrize("season", [None, "2016"])
+def test_resolution_honors_calendar_year_for_numbered_playoff_game(monkeypatch, season):
+    searched = []
+
+    def fake_recent_games(**kwargs):
+        searched.append(kwargs["season"])
+        return {
+            "summary": {"searched_season_types": ["Playoffs"]},
+            "games": [
+                {"game_id": game_id, "game_date": game_date, "season_type": "Playoffs",
+                 "label": label, "home_team_abbr": "CLE", "away_team_abbr": "TOR",
+                 "home_score": 113, "away_score": 87}
+                for game_id, game_date, label in [
+                    ("0042500136", "2026-05-01", "CLE 110, TOR 112"),
+                    ("0041500306", "2016-05-27", "CLE 113, TOR 87"),
+                ]],
+            "source_status": [], "warnings": [],
+        }
+
+    monkeypatch.setattr(tools, "find_recent_completed_games_for_resolution", fake_recent_games)
+    resolution = resolve_game_reference("Raptors vs Cavaliers Game 6 in 2016", season=season, season_type="Auto")
+
+    assert searched == ["2015-16"]
+    assert resolution["summary"]["game_id"] == "0041500306"
 
 
 def test_resolution_requires_all_named_teams(monkeypatch):

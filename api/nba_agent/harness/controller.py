@@ -7,11 +7,15 @@ import os
 import re
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from importlib.metadata import version
 
 from pydantic import ValidationError
+from agents import trace
+from agents.tracing import custom_span
+from agents.tracing.util import gen_trace_id
 
 from api.nba_agent.db import DEFAULT_DB, get_storage
 from api.nba_agent.storage import StorageError
@@ -118,7 +122,7 @@ def public_run(record: dict) -> dict:
 
 class Harness:
     def __init__(self, question, game_id, season, season_type, configuration, limits, model, repository,
-                 follow_up=None, on_event=None):
+                 follow_up=None, on_event=None, openai_trace_id=None):
         self.model, self.repository, self.limits = model, repository, limits
         self.on_event = on_event
         self.started = time.monotonic()
@@ -136,6 +140,7 @@ class Harness:
         self.history = [{"role": "user", "content": encode(clean(opening))}]
         self.record = {
             "run_id": "harness_" + uuid.uuid4().hex, "status": "running", "stop_reason": None,
+            "openai_trace_id": openai_trace_id,
             "version": VERSION, "prompt_version": VERSION, "allowlist_version": VERSION,
             "mcp_server": "nba-analyst/stdio", "model": model.name, "configuration": configuration,
             "packages": {name: version(name) for name in ("openai", "fastmcp", "mcp")},
@@ -158,6 +163,7 @@ class Harness:
         self.gathering_allowed = True
         self.investigation_evidence = 0
         self.reviewed = []  # (draft, review) pairs, in order
+        self.trace_enabled = openai_trace_id is not None
         self.repository.create(self.record)
 
     def event(self, kind, **data):
@@ -183,15 +189,29 @@ class Harness:
     def feedback(self, message):
         self.history.append({"role": "user", "content": encode({"harness_feedback": message})})
 
+    def revision_context(self, feedback):
+        """Give revisions one copy of the ledger instead of replaying bulky tool transcripts."""
+        evidence = {pid: {"packet": entry["packet"],
+                          **({"detail": entry["detail"]} if entry.get("detail") else {})}
+                    for pid, entry in self.record["evidence"].items()}
+        self.history = [{"role": "user", "content": encode(clean({
+            "question": self.record["question"], "game_id": self.record["game_id"],
+            "game_resolved": True, "game_data_cached": True,
+            "conversation": self.record["conversation"],
+            "evidence_ledger": evidence, "harness_feedback": feedback,
+        }))}]
+
     async def model_turn(self, tools, *, review=False, history=None):
         self.check()
         usage = self.record["usage"]
         if usage["model_turns"] >= self.limits.model_turns:
             raise StopRun("iteration_limit")
         messages = history if history is not None else self.history
-        # UTF-8 byte count is a deliberately conservative preflight reservation.
-        # Includes schemas and an allowance for the fixed system instructions.
-        reserve_input = len(encode([messages, tools, Answer.model_json_schema(), Review.model_json_schema()]).encode()) + 4096
+        # JSON bytes substantially overcount model tokens. Reserve roughly one
+        # token per 2.6 bytes, then account for the fixed instructions separately.
+        # The provider's actual usage is charged after every completed call.
+        request_bytes = len(encode([messages, tools, Answer.model_json_schema(), Review.model_json_schema()]).encode())
+        reserve_input = (request_bytes * 5 + 12) // 13 + 2048
         reserve_output = self.limits.output_tokens
         if usage["input_tokens"] + usage["output_tokens"] + reserve_input + reserve_output > self.limits.total_tokens:
             raise StopRun("token_limit")
@@ -204,7 +224,16 @@ class Harness:
                    input=[item for item in messages if item.get("type") != "reasoning"], tools=[t["name"] for t in tools])
         started = time.monotonic()
         try:
-            response = await self.bounded(self.model.respond(messages, tools, review=review, max_output_tokens=reserve_output))
+            with (custom_span("Fact-check model" if review else "Decision model",
+                              data={"run_id": self.record["run_id"], "model": self.model.name,
+                                    "purpose": "verification" if review else "decision"})
+                  if self.trace_enabled else nullcontext()) as span:
+                response = await self.bounded(self.model.respond(messages, tools, review=review,
+                                                                  max_output_tokens=reserve_output))
+                if span is not None:
+                    span.span_data.data.update(response_id=response.get("id"), status=response.get("status"),
+                                               usage=response.get("usage"),
+                                               output_types=[item.get("type") for item in response.get("items", [])])
         except Exception as exc:
             # A timed out request may have been billed. Reserve worst-case usage;
             # do not replay unknown model outcomes automatically.
@@ -285,7 +314,13 @@ class Harness:
             self.event("mcp_call_started", name=name, arguments=arguments, call_id=call.get("call_id"), attempt=attempt + 1)
             started = time.monotonic()
             try:
-                result = clean(await self.bounded(boundary.call(name, arguments)))
+                with (custom_span(f"MCP {name}", data={"run_id": self.record["run_id"],
+                                                        "arguments": clean(arguments)})
+                      if self.trace_enabled else nullcontext()) as span:
+                    result = clean(await self.bounded(boundary.call(name, arguments)))
+                    if span is not None:
+                        span.span_data.data.update(summary=result.get("summary"),
+                                                   packet_count=len(result.get("evidence_packets", [])))
                 if len(encode(result).encode()) > 500_000:
                     raise ToolFailure("tool_result_too_large")
                 self.event("mcp_result_received", name=name, arguments=arguments, result=result,
@@ -371,8 +406,13 @@ class Harness:
         history = [{"role": "user", "content": encode({"question": self.record["question"],
             "claims": [{"claim_index": i, "role": role, **c.model_dump()} for i, (role, c) in enumerate(zip(roles, claims))],
             "evidence": {pid: self.record["evidence"][pid] for pid in cited}})}]
-        response = await self.model_turn([], review=True, history=history)
-        review = Review.model_validate_json(response["text"])
+        with (custom_span("Verify claims", data={"run_id": self.record["run_id"],
+                                                 "claim_count": len(claims)})
+              if self.trace_enabled else nullcontext()) as span:
+            response = await self.model_turn([], review=True, history=history)
+            review = Review.model_validate_json(response["text"])
+            if span is not None:
+                span.span_data.data["classifications"] = [finding.classification for finding in review.findings]
         indices = [f.claim_index for f in review.findings]
         if sorted(indices) != list(range(len(claims))):
             raise ValueError("incomplete_verification")
@@ -454,7 +494,7 @@ class Harness:
                     feedback["action"] = "Use the smallest new MCP request to address these evidence needs, then revise the draft. Do not repeat prior calls."
                     self.event("investigation_started", needs=[f.evidence_need for f in failed])
             self.event("revision_requested", feedback=feedback)
-            self.feedback(feedback)
+            self.revision_context(feedback)
 
     def verified_follow_ups(self):
         """Final claims with only follow-ups that passed the last review, at most FOLLOW_UP_LIMIT.
@@ -502,6 +542,7 @@ class Harness:
         if self.answer.limitations:
             markdown += "\n\n## Limitations\n" + "\n".join("- " + x for x in self.answer.limitations)
         result = {"question": self.record["question"], "mode": "mcp_harness", "route": "mcp_harness",
+            "openai_trace_id": self.record["openai_trace_id"],
             "configuration": self.configuration, "resolution": self.record["resolution"], "cache": self.record["cache"],
             "game_id": self.record["game_id"], "conversation_id": self.record["conversation_id"],
             "parent_run_id": self.record["parent_run_id"],
@@ -532,31 +573,44 @@ async def run_harness(question: str, game_id: str | None = None, season: str | N
     limits = limits or Limits.from_environment()
     owned_model = model is None
     model = model or ResponsesModel()
+    trace_enabled = isinstance(model, ResponsesModel)
     repository = repository or HarnessRunRepository(get_storage(db_path))
     harness = None
+    openai_trace_id = gen_trace_id() if trace_enabled else None
     try:
         harness = Harness(question, game_id, season, season_type, configuration, limits, model, repository,
-                          follow_up=follow_up, on_event=on_event)
-        harness.event("run_started", run_id=harness.record["run_id"], conversation_id=harness.record["conversation_id"],
-                      parent_run_id=harness.record["parent_run_id"], game_id=harness.record["game_id"],
-                      inherited_packets=len(harness.record["evidence"]))
-        reason = "error"
-        try:
-            async with asyncio.timeout(limits.seconds):
-                async with (mcp_client or local_client(db_path, limits.operation_seconds)) as client:
-                    await harness.execute(MCPBoundary(client))
-        except StopRun as exc:
-            reason = exc.reason
-        except asyncio.CancelledError:
-            harness.finish("cancelled")
-            raise
-        except TimeoutError:
-            reason = "time_limit"
-        except StorageError:
-            raise
-        except Exception as exc:
-            harness.event("run_error", error=type(exc).__name__)
-        return harness.finish(reason)
+                          follow_up=follow_up, on_event=on_event, openai_trace_id=openai_trace_id)
+        with (trace("NBA MCP Harness", trace_id=openai_trace_id,
+                    group_id=harness.record["conversation_id"],
+                    metadata={"run_id": harness.record["run_id"],
+                              "game_id": harness.record["game_id"],
+                              "configuration": configuration}) if trace_enabled else nullcontext()):
+            harness.event("run_started", run_id=harness.record["run_id"], conversation_id=harness.record["conversation_id"],
+                          parent_run_id=harness.record["parent_run_id"], game_id=harness.record["game_id"],
+                          inherited_packets=len(harness.record["evidence"]))
+            reason = "error"
+            try:
+                async with asyncio.timeout(limits.seconds):
+                    async with (mcp_client or local_client(db_path, limits.operation_seconds)) as client:
+                        await harness.execute(MCPBoundary(client))
+            except StopRun as exc:
+                reason = exc.reason
+            except asyncio.CancelledError:
+                harness.finish("cancelled")
+                raise
+            except TimeoutError:
+                reason = "time_limit"
+            except StorageError:
+                raise
+            except Exception as exc:
+                harness.event("run_error", error=type(exc).__name__)
+            result = harness.finish(reason)
+            if trace_enabled:
+                with custom_span("Run outcome", data={"run_id": harness.record["run_id"],
+                                                      "stop_reason": reason,
+                                                      "usage": harness.record["usage"]}):
+                    pass
+            return result
     finally:
         if owned_model:
             await model.close()

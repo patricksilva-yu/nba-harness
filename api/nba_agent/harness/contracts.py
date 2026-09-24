@@ -54,7 +54,7 @@ class Limits(StrictModel):
     retries: int = Field(default=1, ge=0, le=2)
     seconds: float = Field(default=180, gt=0, le=600)
     operation_seconds: float = Field(default=45, gt=0, le=120)
-    total_tokens: int = Field(default=100000, ge=1)
+    total_tokens: int = Field(default=200000, ge=1)
     output_tokens: int = Field(default=4000, ge=1, le=16000)
     max_cost_usd: float | None = Field(default=None, gt=0)
     input_usd_per_million: float | None = Field(default=None, ge=0)

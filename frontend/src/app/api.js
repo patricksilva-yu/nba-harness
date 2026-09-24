@@ -37,6 +37,11 @@ export const api = {
   conversations: () => getJSON('/api/conversations?limit=20'),
   conversation: (id) => getJSON(`/api/conversations/${encodeURIComponent(id)}`),
   gameFlow: (gameId, options) => getJSON(`/api/games/${encodeURIComponent(gameId)}/flow`, options),
+  traces: (filters, options) => {
+    let query = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== '' && v != null))
+    return getJSON(`/api/traces?${query}`, options)
+  },
+  trace: (runId, options) => getJSON(`/api/traces/${encodeURIComponent(runId)}`, options),
 }
 
 // POST /api/ask/stream: calls onStep for each harness event and resolves with

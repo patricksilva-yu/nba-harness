@@ -1,5 +1,5 @@
 import { PlusIcon } from '@heroicons/react/16/solid'
-import { ChatBubbleLeftRightIcon, ShieldCheckIcon } from '@heroicons/react/20/solid'
+import { ChatBubbleLeftRightIcon, ShieldCheckIcon, Square3Stack3DIcon } from '@heroicons/react/20/solid'
 import {
   Sidebar,
   SidebarBody,
@@ -113,6 +113,10 @@ export function AppSidebar({ view, games, conversations, currentGameId, currentC
           <SidebarItem current={view === 'reliability'} onClick={() => onView('reliability')}>
             <ShieldCheckIcon />
             <SidebarLabel>How reliable is this?</SidebarLabel>
+          </SidebarItem>
+          <SidebarItem href="/traces" current={view === 'traces'}>
+            <Square3Stack3DIcon />
+            <SidebarLabel>Traces</SidebarLabel>
           </SidebarItem>
         </SidebarSection>
       </SidebarFooter>
