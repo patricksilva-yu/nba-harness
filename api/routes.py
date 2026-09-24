@@ -9,6 +9,7 @@ import json
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from api.auth import Viewer, require_admin, require_user
 from api.models import AskRequest, IngestionRequest
@@ -19,6 +20,7 @@ from api.nba_agent.harness.contracts import Limits
 from api.nba_agent.harness.model import ResponsesModel
 from api.nba_agent.harness.spans import build_spans, summarize
 from api.nba_agent.storage.repositories import HarnessRunRepository
+from api.nba_agent.storage.favorites import FavoriteTeamsRepository
 from api.nba_agent.storage import StorageError, storage_health
 from api.nba_agent.tools import (
     find_recent_completed_games,
@@ -30,6 +32,62 @@ from api.nba_agent.tools import (
 
 
 router = APIRouter()
+
+NBA_TEAM_ABBRS = frozenset("ATL BOS BKN CHA CHI CLE DAL DEN DET GSW HOU IND LAC LAL MEM MIA MIL MIN NOP NYK OKC ORL PHI PHX POR SAC SAS TOR UTA WAS".split())
+LOCAL_DEVELOPMENT_USER = "00000000-0000-0000-0000-000000000000"
+
+
+class FavoriteTeamRequest(BaseModel):
+    team_abbr: str
+
+
+def favorites_repository() -> FavoriteTeamsRepository:
+    storage = get_storage()
+    storage.initialize()
+    return FavoriteTeamsRepository(storage)
+
+
+def favorite_owner(viewer: Viewer) -> str:
+    return viewer.user_id or LOCAL_DEVELOPMENT_USER
+
+
+@router.get("/api/me/favorite-teams")
+def favorite_teams(viewer: Viewer = Depends(require_user)) -> dict[str, list[str]]:
+    try:
+        return {"teams": favorites_repository().list(favorite_owner(viewer))}
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Favorite teams unavailable; verify migrations") from exc
+
+
+@router.get("/api/me/favorite-games")
+def favorite_games(viewer: Viewer = Depends(require_user)) -> dict[str, list[dict]]:
+    try:
+        return {"games": favorites_repository().recent_games(favorite_owner(viewer))}
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Favorite games unavailable; verify migrations") from exc
+
+
+@router.post("/api/me/favorite-teams", status_code=201)
+def add_favorite_team(request: FavoriteTeamRequest, viewer: Viewer = Depends(require_user)) -> dict[str, str]:
+    abbr = request.team_abbr.upper().strip()
+    if abbr not in NBA_TEAM_ABBRS:
+        raise HTTPException(status_code=422, detail="Choose a valid NBA team")
+    try:
+        favorites_repository().add(favorite_owner(viewer), abbr)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Favorite teams unavailable; verify migrations") from exc
+    return {"team_abbr": abbr}
+
+
+@router.delete("/api/me/favorite-teams/{team_abbr}", status_code=204)
+def remove_favorite_team(team_abbr: str, viewer: Viewer = Depends(require_user)) -> None:
+    abbr = team_abbr.upper().strip()
+    if abbr not in NBA_TEAM_ABBRS:
+        raise HTTPException(status_code=422, detail="Choose a valid NBA team")
+    try:
+        favorites_repository().remove(favorite_owner(viewer), abbr)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Favorite teams unavailable; verify migrations") from exc
 
 
 def harness_follow_up(request: AskRequest, viewer: Viewer) -> dict | None:

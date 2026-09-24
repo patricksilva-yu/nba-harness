@@ -1,5 +1,5 @@
 import { ArrowRightStartOnRectangleIcon, ChevronUpIcon, PlusIcon } from '@heroicons/react/16/solid'
-import { ChatBubbleLeftRightIcon, ShieldCheckIcon, Square3Stack3DIcon } from '@heroicons/react/20/solid'
+import { ChatBubbleLeftRightIcon, HomeIcon, ShieldCheckIcon, Square3Stack3DIcon } from '@heroicons/react/20/solid'
 import { Avatar } from '../components/avatar'
 import { Dropdown, DropdownButton, DropdownDivider, DropdownHeader, DropdownItem, DropdownLabel, DropdownMenu } from '../components/dropdown'
 import {
@@ -136,6 +136,10 @@ export function AppSidebar({ view, games, conversations, currentGameId, currentC
 
       <SidebarFooter>
         <SidebarSection>
+          <SidebarItem current={view === 'home'} onClick={() => onView('home')}>
+            <HomeIcon />
+            <SidebarLabel>Home</SidebarLabel>
+          </SidebarItem>
           <SidebarItem current={view === 'ask'} onClick={() => onView('ask')}>
             <ChatBubbleLeftRightIcon />
             <SidebarLabel>Ask about a game</SidebarLabel>

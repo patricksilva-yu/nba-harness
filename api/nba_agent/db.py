@@ -70,6 +70,13 @@ def create_schema(con: StorageConnection) -> None:
     """)
     for column in ("conversation_id", "parent_run_id", "user_id"):
         con.execute(f"ALTER TABLE harness_runs ADD COLUMN IF NOT EXISTS {column} TEXT")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS favorite_teams (
+            user_id TEXT NOT NULL, team_abbr TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (user_id, team_abbr)
+        )
+    """)
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_responses (

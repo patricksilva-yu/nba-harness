@@ -18,6 +18,7 @@ from api.nba_agent.tools import persist_evidence_packets
 
 EXPECTED_PRIMARY_KEYS = {
     "harness_runs": ["run_id"],
+    "favorite_teams": ["user_id", "team_abbr"],
     "raw_responses": ["response_id"],
     "games": ["game_id"],
     "box_scores_team": ["game_id", "team_side"],

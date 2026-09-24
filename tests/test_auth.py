@@ -104,6 +104,45 @@ def test_public_data_stays_open(client, monkeypatch):
     assert client.get("/api/recent-games").status_code == 200
 
 
+def test_favorite_teams_are_account_scoped_and_idempotent(client):
+    path = "/api/me/favorite-teams"
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers=bearer(ALICE)).json() == {"teams": []}
+    assert client.post(path, json={"team_abbr": "tor"}, headers=bearer(ALICE)).status_code == 201
+    assert client.post(path, json={"team_abbr": "TOR"}, headers=bearer(ALICE)).status_code == 201
+    assert client.get(path, headers=bearer(ALICE)).json() == {"teams": ["TOR"]}
+    assert client.get(path, headers=bearer(BOB)).json() == {"teams": []}
+    assert client.post(path, json={"team_abbr": "INVALID"}, headers=bearer(ALICE)).status_code == 422
+    assert client.delete(path + "/TOR", headers=bearer(BOB)).status_code == 204
+    assert client.get(path, headers=bearer(ALICE)).json() == {"teams": ["TOR"]}
+    assert client.delete(path + "/TOR", headers=bearer(ALICE)).status_code == 204
+    assert client.get(path, headers=bearer(ALICE)).json() == {"teams": []}
+
+
+def test_home_games_only_include_followed_teams(client):
+    from api import routes
+
+    storage = routes.get_storage()
+    storage.initialize()
+    connection = storage.open(read_only=False)
+    try:
+        connection.execute(
+            """INSERT INTO games (game_id, game_date, away_team_abbr, away_score, home_team_abbr, home_score)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ["raptors_game", "2026-04-01", "TOR", 108, "BOS", 102],
+        )
+        connection.execute(
+            """INSERT INTO games (game_id, game_date, away_team_abbr, away_score, home_team_abbr, home_score)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ["other_game", "2026-04-02", "LAL", 110, "GSW", 105],
+        )
+    finally:
+        connection.close()
+    client.post("/api/me/favorite-teams", json={"team_abbr": "TOR"}, headers=bearer(ALICE))
+    assert [g["game_id"] for g in client.get("/api/me/favorite-games", headers=bearer(ALICE)).json()["games"]] == ["raptors_game"]
+    assert client.get("/api/me/favorite-games", headers=bearer(BOB)).json() == {"games": []}
+
+
 def test_history_belongs_to_the_asker(client):
     status, alice_run = ask(client, bearer(ALICE))
     assert status == 200 and alice_run["stop_reason"] == "supported"

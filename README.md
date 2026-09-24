@@ -54,6 +54,12 @@ The UI is a React app built with Tailwind CSS v4 and the Catalyst UI kit
 `frontend/src/app/`. Add `?config=basic` or `?config=verification` to the URL to
 try a lighter harness configuration during development.
 
+After signing in, the home page lets users follow NBA teams and see their
+completed games already in the database. Select a game to ask about it, or use
+the sidebar's New question action. Favorites are saved per account; apply
+`alembic upgrade head` before using them with PostgreSQL. This page does not
+send notifications or generate analyses automatically.
+
 Accounts use Supabase Auth. Set `SUPABASE_URL` (and optionally
 `NBA_ADMIN_USER_IDS`) in `.env`, or set `NBA_AUTH_MODE=disabled` to run without
 sign-in during local development. Asking and saved conversations need an
@@ -124,4 +130,3 @@ Use the disposable DuckDB or PostgreSQL test configuration only for tests; never
 ```bash
 .venv/bin/pytest -q
 ```
-

@@ -7,6 +7,7 @@ import { AppSidebar, BrandMark } from './AppSidebar'
 import { Composer } from './Composer'
 import { EmptyState } from './EmptyState'
 import { formatGameDate, GameHeader } from './GameHeader'
+import { Home } from './Home'
 import { Inspector } from './Inspector'
 import { ReliabilityView } from './ReliabilityView'
 import { navigate, useLocation } from './router'
@@ -75,10 +76,14 @@ function NoTraceAccess() {
 export function App() {
   let route = useLocation()
   let { isAdmin } = useAuth()
-  let [section, setView] = useState('ask')
+  let [section, setView] = useState(() => ({ '/ask': 'ask', '/reliability': 'reliability' })[location.pathname] ?? 'home')
   // Traces are URL-addressed (/traces, /traces/:runId); the other views are app state.
   let traceRoute = route.path.match(/^\/traces(?:\/([^/]+))?\/?$/)
   let view = traceRoute ? 'traces' : section
+  useEffect(() => {
+    let routeView = { '/': 'home', '/ask': 'ask', '/reliability': 'reliability' }[route.path]
+    if (routeView) setView(routeView)
+  }, [route.path])
   let [games, setGames] = useState({ status: 'loading', items: [] })
   let [conversations, setConversations] = useState({ status: 'loading', items: [] })
   let [conversation, setConversation] = useState(NEW_CONVERSATION)
@@ -156,7 +161,7 @@ export function App() {
   function startConversation(next) {
     if (busy) return
     setView('ask')
-    navigate('/')
+    navigate('/ask')
     setPanel((p) => ({ ...p, open: false }))
     setConversation({ ...NEW_CONVERSATION, ...next })
   }
@@ -176,7 +181,7 @@ export function App() {
 
   async function openConversation(id) {
     if (busy || id === conversation.id) {
-      navigate('/')
+      navigate('/ask')
       return setView('ask')
     }
     startConversation({ id, status: 'loading' })
@@ -213,7 +218,7 @@ export function App() {
           currentConversationId={conversation.id}
           onView={(v) => {
             setView(v)
-            navigate('/')
+            navigate(({ home: '/', ask: '/ask', reliability: '/reliability' })[v] ?? '/')
             setPanel((p) => ({ ...p, open: false }))
           }}
           onNewQuestion={() => startConversation({})}
@@ -244,6 +249,8 @@ export function App() {
         ) : (
           <TracesList params={route.params} />
         )
+      ) : view === 'home' ? (
+        <Home onSelectGame={(g) => startConversation({ gameId: g.game_id, gameRow: g })} />
       ) : view === 'reliability' ? (
         <ReliabilityView />
       ) : (

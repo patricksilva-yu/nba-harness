@@ -47,6 +47,12 @@ async function getJSON(path, { signal } = {}) {
 
 export const api = {
   me: () => getJSON('/api/me'),
+  favoriteTeams: () => getJSON('/api/me/favorite-teams'),
+  favoriteGames: () => getJSON('/api/me/favorite-games'),
+  addFavoriteTeam: (team_abbr) => request('/api/me/favorite-teams', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ team_abbr }),
+  }),
+  removeFavoriteTeam: (abbr) => request(`/api/me/favorite-teams/${encodeURIComponent(abbr)}`, { method: 'DELETE' }),
   recentGames: () => getJSON('/api/recent-games?season_type=Auto&limit=8'),
   conversations: () => getJSON('/api/conversations?limit=20'),
   conversation: (id) => getJSON(`/api/conversations/${encodeURIComponent(id)}`),

@@ -38,6 +38,12 @@ Revision `20260924_02` drops `analysis_runs`, which only the removed
 deterministic agent wrote; harness runs are recorded in `harness_runs`.
 Downgrading restores an empty table.
 
+Revision `20260924_03` adds `favorite_teams`, keyed by Supabase user UUID and
+NBA team abbreviation. It enables RLS with no browser-facing policies; the API
+owns reads and writes. The home page queries completed games already present in
+`games` for those teams. Favorite selection does not start ingestion or create
+postgame analysis.
+
 ## Relationships and deletion policy
 
 `games` is the parent of normalized game data. Its box scores, play-by-play,
