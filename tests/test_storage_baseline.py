@@ -13,7 +13,7 @@ from api.nba_agent.ingestion_jobs import (
 from api.nba_agent.official_ingest import persist_raw_response
 from api.nba_agent.storage.operations import cleanup_expired_raw_responses, storage_health
 from api.nba_agent.storage.redaction import REDACTED, redact_sensitive_payload
-from api.nba_agent.tools import persist_analysis_run, persist_evidence_packets
+from api.nba_agent.tools import persist_evidence_packets
 
 
 EXPECTED_PRIMARY_KEYS = {
@@ -94,6 +94,12 @@ def test_initialize_database_is_idempotent(tmp_path):
     assert table_count == len(EXPECTED_PRIMARY_KEYS)
 
 
+def test_storage_defaults_to_local_duckdb(monkeypatch):
+    monkeypatch.delenv("NBA_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("POSTGRES_CONNECTION_STRING", raising=False)
+    assert storage_config()["backend"] == "duckdb"
+
+
 def test_postgres_config_requires_url_and_selects_its_adapter(monkeypatch, tmp_path):
     monkeypatch.setenv("NBA_STORAGE_BACKEND", "postgres")
     monkeypatch.delenv("POSTGRES_CONNECTION_STRING", raising=False)
@@ -153,40 +159,6 @@ def test_evidence_packet_write_replaces_same_packet_id(tmp_path):
     assert len(rows) == 1
     assert rows[0][0:2] == ("Replacement claim", "high")
     assert json.loads(rows[0][2])["source"]["detail"] == "replacement"
-
-
-def test_analysis_runs_are_append_only(tmp_path):
-    db_path = tmp_path / "analysis_runs.duckdb"
-    initialize_database(db_path)
-
-    first_id = persist_analysis_run(
-        game_id="game_1",
-        user_question="Why?",
-        memo_markdown="First answer",
-        packet_ids=["packet_1"],
-        db_path=db_path,
-    )
-    second_id = persist_analysis_run(
-        game_id="game_1",
-        user_question="Why?",
-        memo_markdown="Second answer",
-        packet_ids=["packet_1", "packet_2"],
-        db_path=db_path,
-    )
-
-    con = connect(db_path)
-    rows = con.execute(
-        "SELECT run_id, packet_ids_json FROM analysis_runs WHERE game_id = ? ORDER BY created_at, run_id",
-        ["game_1"],
-    ).fetchall()
-    con.close()
-
-    assert first_id != second_id
-    assert {row[0] for row in rows} == {first_id, second_id}
-    assert {tuple(json.loads(row[1])) for row in rows} == {
-        ("packet_1",),
-        ("packet_1", "packet_2"),
-    }
 
 
 def test_ingestion_job_lifecycle_and_serialization(tmp_path):

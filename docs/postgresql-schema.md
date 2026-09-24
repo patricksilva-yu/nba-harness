@@ -25,6 +25,15 @@ self-referencing foreign key from `parent_run_id` to `run_id`, and an index on
 created before this revision keep null values and are not listed as
 conversations.
 
+Revision `20260924_01` adds a nullable `user_id` UUID to `harness_runs` (the
+Supabase Auth user who asked; null for signed-out questions and earlier runs)
+with an index on `(user_id, created_at)` for each user's history. It has no
+foreign key to `auth.users`, which Supabase owns and test databases lack. The
+revision also enables Row Level Security, with no policies, on every
+application table so Supabase's browser-facing roles cannot reach them through
+the Data API; the application connects as the table owner and is unaffected.
+New tables must enable RLS in their own migration. See [authentication](auth.md).
+
 ## Relationships and deletion policy
 
 `games` is the parent of normalized game data. Its box scores, play-by-play,
@@ -33,6 +42,13 @@ meaning without their game. `analysis_runs` uses `ON DELETE SET NULL` so that
 historical analysis remains auditable if a game record is deliberately
 removed. `raw_responses` has no foreign key because an upstream response may
 be captured before a game exists locally (for example, a league-wide log).
+
+`games` holds two kinds of rows. Results-only rows (`source =
+'nba_api:LeagueGameLog:results'`, added 2026-09-23) record the final score of
+every completed game in a synced season, so series and form context is complete;
+they have no box-score or play-by-play children. A full game import replaces its
+row with a detailed one. "Cached game" checks count child rows, never the mere
+existence of a `games` row. This needed no schema change.
 
 ## Domain controls
 

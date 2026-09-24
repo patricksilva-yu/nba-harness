@@ -1,6 +1,7 @@
 // Translates public harness events into the fan-facing step list.
 
 const SECTIONS = {
+  stakes: 'the series and season context',
   snapshot: 'the final score',
   periods: 'quarter-by-quarter scoring',
   advanced: 'team efficiency',
@@ -14,6 +15,7 @@ export const STOP_TEXT = {
   supported: 'Every claim is backed by evidence',
   answered_unverified: 'Answered without a fact-check',
   insufficient_evidence: "The game data doesn't cover this question",
+  game_unresolved: "Couldn't tell which game you meant",
   no_progress: 'It kept hitting dead ends, so it stopped instead of guessing',
   tool_limit: 'It reached the limit on data lookups',
   iteration_limit: 'It reached the limit on thinking steps',

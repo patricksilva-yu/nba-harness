@@ -20,7 +20,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from api.nba_agent.storage import PostgresStorage, StorageError
 from api.nba_agent.storage.operations import cleanup_expired_raw_responses, storage_health
-from api.nba_agent.storage.repositories import AnalysisRunRepository, EvidenceRepository, IngestionJobRepository
+from api.nba_agent.storage.repositories import EvidenceRepository, IngestionJobRepository
 from api.nba_agent.storage.repositories import HarnessRunRepository
 from api.nba_agent.db import get_storage
 from api.nba_agent.tools import get_box_score
@@ -69,12 +69,18 @@ def test_initial_migration_creates_canonical_schema_and_downgrades_cleanly():
                 "raw_responses",
                 "seed_player_game_logs",
             }
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260923_02"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260924_01"
             harness_columns = {column["name"] for column in inspector.get_columns("harness_runs")}
-            assert {"conversation_id", "parent_run_id"}.issubset(harness_columns)
+            assert {"conversation_id", "parent_run_id", "user_id"}.issubset(harness_columns)
             assert any(fk["referred_table"] == "harness_runs" and fk["constrained_columns"] == ["parent_run_id"]
                        for fk in inspector.get_foreign_keys("harness_runs"))
-            assert "ix_harness_runs_conversation_id" in {item["name"] for item in inspector.get_indexes("harness_runs")}
+            assert {"ix_harness_runs_conversation_id", "ix_harness_runs_user_id"}.issubset(
+                {item["name"] for item in inspector.get_indexes("harness_runs")})
+            # Every application table denies Supabase's browser-facing roles.
+            without_rls = connection.execute(text(
+                """SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = :schema AND c.relkind = 'r' AND NOT c.relrowsecurity"""), {"schema": schema}).all()
+            assert without_rls == []
 
             raw_columns = {column["name"]: column for column in inspector.get_columns("raw_responses")}
             evidence_columns = {column["name"]: column for column in inspector.get_columns("evidence_packets")}
@@ -127,6 +133,13 @@ def test_postgres_storage_executes_parameterized_upserts_and_rolls_back_failures
         assert [r["run_id"] for r in harness_repository.conversation("harness_integration")] == ["harness_follow_up"]
         # The opening run predates conversation ids, so no conversation has a first run to describe.
         assert harness_repository.recent_conversations() == []
+        owner, other = str(uuid.uuid4()), str(uuid.uuid4())
+        harness_repository.create({"run_id": "harness_owned", "status": "running", "question": "Mine?", "events": [],
+                                   "conversation_id": "harness_owned", "user_id": owner})
+        assert [c["conversation_id"] for c in harness_repository.recent_conversations(user_id=owner)] == ["harness_owned"]
+        assert harness_repository.recent_conversations(user_id=other) == []
+        assert harness_repository.conversation("harness_owned", other) == []
+        assert [r["run_id"] for r in harness_repository.conversation("harness_owned", owner)] == ["harness_owned"]
         connection = storage.open(read_only=False)
         connection.execute(
             "INSERT INTO games (game_id, game_date, source) VALUES (?, ?, ?)",
@@ -145,20 +158,18 @@ def test_postgres_storage_executes_parameterized_upserts_and_rolls_back_failures
         EvidenceRepository(storage).save_many("game_1", [packet])
         packet["claim_seed"] = "replacement"
         EvidenceRepository(storage).save_many("game_1", [packet])
-        run_id = AnalysisRunRepository(storage).create("game_1", "Why?", "Memo", ["packet_1"])
         job = IngestionJobRepository(storage).create("game_1")
         assert IngestionJobRepository(storage).claim(job["job_id"]) is True
         assert IngestionJobRepository(storage).claim(job["job_id"]) is False
-        IngestionJobRepository(storage).update(job["job_id"], "ready", result={"run_id": run_id}, error=None)
+        IngestionJobRepository(storage).update(job["job_id"], "ready", result={"game_id": "game_1"}, error=None)
 
         connection = storage.open()
         assert connection.execute("SELECT claim_seed, payload_json FROM evidence_packets WHERE packet_id = ?", ["packet_1"]).fetchone() == (
             "replacement",
             packet,
         )
-        assert connection.execute("SELECT packet_ids_json FROM analysis_runs WHERE run_id = ?", [run_id]).fetchone() == (["packet_1"],)
         connection.close()
-        assert IngestionJobRepository(storage).get(job["job_id"])["result"] == {"run_id": run_id}
+        assert IngestionJobRepository(storage).get(job["job_id"])["result"] == {"game_id": "game_1"}
 
         connection = storage.open(read_only=False)
         connection.execute(

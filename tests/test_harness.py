@@ -22,6 +22,9 @@ from api.nba_agent.storage.repositories import HarnessRunRepository
 PACKET = {"packet_id": "p1", "type": "game_snapshot", "claim_seed": "AWY defeated HOM 101-100.",
           "source": {"provider": "fixture"}, "confidence": "high", "metrics": {"away_score": 101, "home_score": 100}}
 
+STAKES_PACKET = {"packet_id": "stakes_g1", "type": "team_form", "claim_seed": "After this game: AWY 1-0; HOM 0-1.",
+                 "source": {"provider": "fixture"}, "confidence": "high", "metrics": {}}
+
 
 def call(name, **arguments):
     return {"id": "response", "status": "completed", "text": "", "usage": {"input_tokens": 100, "output_tokens": 50},
@@ -81,7 +84,10 @@ def server(*, packet=None, wrong_game=False, unresolved=False):
 
     @mcp.tool()
     def resolve_game(query: str, game_id: str | None = None) -> dict:
-        return {"summary": {} if unresolved else {"game_id": game_id or "g1"}}
+        if unresolved:
+            return {"summary": {"resolution_status": "ambiguous"},
+                    "candidates": [{"game_id": "g1", "label": "AWY 101, HOM 100"}]}
+        return {"summary": {"game_id": game_id or "g1"}}
 
     @mcp.tool()
     def ensure_game_data(game_id: str) -> dict:
@@ -89,6 +95,8 @@ def server(*, packet=None, wrong_game=False, unresolved=False):
 
     @mcp.tool()
     def get_game_analysis_context(game_id: str, sections: list[str]) -> dict:
+        if sections == ["stakes"]:
+            return {"summary": {"game_id": game_id}, "evidence_packets": [deepcopy(STAKES_PACKET)]}
         return {"summary": {"game_id": "other" if wrong_game else game_id},
                 "evidence_packets": [deepcopy(PACKET if packet is None else packet)]}
 
@@ -119,7 +127,8 @@ def run(tmp_path, steps, *, config="investigation", limits=None, mcp=None):
 def test_success_persists_complete_ordered_trace(tmp_path):
     result = run(tmp_path, [*preparation(), answer(), review()])
     assert result["stop_reason"] == "supported"
-    assert result["usage"]["tool_calls"] == 3
+    # resolve, ensure, the harness's own stakes lookup, then the model's snapshot request.
+    assert result["usage"]["tool_calls"] == 4
     assert result["usage"]["input_tokens"] == 500
     stored = HarnessRunRepository(get_storage(tmp_path / "trace.duckdb")).get(result["analysis_run_id"])
     assert stored == result["trace"]
@@ -180,7 +189,7 @@ def test_invalid_calls_never_cross_mcp(tmp_path, bad_call):
 def test_duplicate_calls_stop_without_reexecution(tmp_path):
     result = run(tmp_path, [*preparation(), preparation()[-1], preparation()[-1], preparation()[-1]])
     assert result["stop_reason"] == "no_progress"
-    assert result["usage"]["tool_calls"] == 3
+    assert result["usage"]["tool_calls"] == 4
 
 
 def test_fabricated_citations_fail_closed(tmp_path):
@@ -192,7 +201,7 @@ def test_fabricated_citations_fail_closed(tmp_path):
 def test_wrong_game_result_is_not_evidence(tmp_path):
     result = run(tmp_path, [*preparation(), answer(), answer()], mcp=server(wrong_game=True))
     assert result["stop_reason"] == "no_progress"
-    assert result["trace"]["evidence"] == {}
+    assert set(result["trace"]["evidence"]) == {"stakes_g1"}
 
 
 @pytest.mark.parametrize("limits,reason", [(Limits(tool_calls=1), "tool_limit"),
@@ -249,8 +258,9 @@ def test_streaming_model_gets_openai_trace_when_supplied_by_route(tmp_path, monk
 
 def test_unresolved_game_persists_failure_without_model_guess(tmp_path):
     result = run(tmp_path, preparation(), mcp=server(unresolved=True))
-    assert result["stop_reason"] == "insufficient_evidence"
+    assert result["stop_reason"] == "game_unresolved"
     assert result["usage"]["tool_calls"] == 1
+    assert result["resolution"]["candidates"] == [{"game_id": "g1", "label": "AWY 101, HOM 100"}]
 
 
 def test_model_timeout_is_bounded_and_not_replayed(tmp_path):
@@ -328,14 +338,14 @@ def test_transient_read_failure_has_one_recorded_retry(tmp_path, monkeypatch):
     monkeypatch.setattr(MCPBoundary, "call", flaky)
     result = run(tmp_path, [*preparation(), answer(), review()])
     assert result["stop_reason"] == "supported"
-    assert result["usage"]["tool_calls"] == 4
+    assert result["usage"]["tool_calls"] == 5
     assert len([e for e in result["trace"]["events"] if e["kind"] == "retry"]) == 1
 
 
 def test_verification_configuration_cannot_investigate(tmp_path):
     result = run(tmp_path, [*preparation(), answer(), review("insufficient", "More detail"),
         call("get_evidence_detail", game_id="g1", packet_id="p1"), answer(), review()], config="verification")
-    assert result["usage"]["tool_calls"] == 3
+    assert result["usage"]["tool_calls"] == 4
     assert any(e.get("error") == "evidence_gathering_closed" for e in result["trace"]["events"])
 
 
@@ -424,8 +434,7 @@ def test_harness_has_no_direct_basketball_imports():
     import ast
     from pathlib import Path
     root = Path(__file__).resolve().parents[1] / "api" / "nba_agent" / "harness"
-    forbidden = {"api.nba_agent.service", "api.nba_agent.tools", "api.nba_agent.agent",
-                 "api.nba_agent.responses_agent", "api.nba_agent.analysis", "api.nba_agent.official_ingest"}
+    forbidden = {"api.nba_agent.service", "api.nba_agent.tools", "api.nba_agent.official_ingest"}
     for path in root.glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom):
@@ -516,8 +525,9 @@ def test_live_events_are_durable_public_views(tmp_path):
     assert {"result", "input", "items", "text"}.isdisjoint(set().union(*seen))
     resolved = next(e for e in seen if e["kind"] == "mcp_call_completed" and e["name"] == "resolve_game")
     assert resolved["game"] == {"game_id": "g1"}
-    context = next(e for e in seen if e["kind"] == "mcp_call_completed" and e["name"] == "get_game_analysis_context")
-    assert context["evidence"] == [{"packet_id": "p1", "type": "game_snapshot"}]
+    contexts = [e for e in seen if e["kind"] == "mcp_call_completed" and e["name"] == "get_game_analysis_context"]
+    assert [c["evidence"] for c in contexts] == [[{"packet_id": "stakes_g1", "type": "team_form"}],
+                                                  [{"packet_id": "p1", "type": "game_snapshot"}]]
     assert next(e for e in seen if e["kind"] == "verification")["findings"][1]["classification"] == "supported"
     assert all(e["elapsed_seconds"] >= 0 for e in seen)
 
@@ -566,7 +576,6 @@ def test_streaming_endpoint_and_follow_up_over_http(tmp_path, monkeypatch):
     assert client.post("/api/ask/stream", json={"question": "Again?", "parent_run_id": "missing"}).status_code == 404
     assert client.post("/api/ask/stream", json={"question": "Again?", "parent_run_id": result["analysis_run_id"],
                                                 "game_id": "other"}).status_code == 400
-    assert client.post("/api/ask/stream", json={"question": "Again?", "mode": "deterministic"}).status_code == 400
     assert client.get("/api/conversations/missing").status_code == 404
 
 
@@ -604,7 +613,7 @@ def test_real_server_documents_sections_and_rejects_guessed_ones(tmp_path):
             boundary = MCPBoundary(client)
             tools = {t["name"]: t for t in await boundary.discover()}
             sections = tools["get_game_analysis_context"]["parameters"]["properties"]["sections"]
-            assert sections["items"]["enum"] == ["snapshot", "periods", "runs", "players", "advanced", "possessions", "lineups"]
+            assert sections["items"]["enum"] == ["stakes", "snapshot", "periods", "runs", "players", "advanced", "possessions", "lineups"]
             assert "largest lead" in sections["description"]
             assert "get_game_window" in tools
             with pytest.raises(Exception, match="invalid_arguments"):
@@ -635,7 +644,8 @@ def test_trace_spans_nest_calls_under_run_and_verification(tmp_path):
     assert root["name"] == "NBA MCP Harness" and root["attributes"]["run_id"] == result["analysis_run_id"]
     assert root["tokens"] == {"input": 700, "output": 350}
     tools = [s for s in spans if s["type"] == "tool"]
-    assert [s["name"] for s in tools] == ["MCP resolve_game", "MCP ensure_game_data", "MCP get_game_analysis_context"]
+    assert [s["name"] for s in tools] == ["MCP resolve_game", "MCP ensure_game_data", "MCP get_game_analysis_context",
+                                          "MCP get_game_analysis_context"]
     assert all(parent(s) == "NBA MCP Harness" and s["outputs"]["summary"] for s in tools)
     verifies = [s for s in spans if s["type"] == "verify"]
     assert [s["status"] for s in verifies] == ["warning", "ok"]
@@ -666,7 +676,7 @@ def test_traces_api_lists_filters_and_details_runs(tmp_path, monkeypatch):
     assert listed["total"] == 2
     assert [t["run_id"] for t in listed["traces"]] == [stopped["analysis_run_id"], supported["analysis_run_id"]]
     row = listed["traces"][1]
-    assert row["question"] == "Who won?" and row["input_tokens"] == 500 and row["tool_calls"] == 3
+    assert row["question"] == "Who won?" and row["input_tokens"] == 500 and row["tool_calls"] == 4
     assert row["duration_seconds"] > 0 and row["created_at"]
     only = client.get("/api/traces", params={"stop_reason": "supported"}).json()
     assert [t["run_id"] for t in only["traces"]] == [supported["analysis_run_id"]]
@@ -678,3 +688,17 @@ def test_traces_api_lists_filters_and_details_runs(tmp_path, monkeypatch):
     assert detail["trace"]["stop_reason"] == "supported"
     assert detail["spans"][0]["name"] == "NBA MCP Harness"
     assert client.get("/api/traces/missing").status_code == 404
+
+
+def test_harness_attaches_stakes_once_after_data_is_cached(tmp_path):
+    model = ScriptedModel([*preparation(), answer(), review()])
+    result = asyncio.run(run_harness("Who won?", game_id="g1", db_path=tmp_path / "trace.duckdb",
+                                     model=model, mcp_client=Client(server())))
+    assert result["trace"]["evidence"]["stakes_g1"]["arguments"] == {"game_id": "g1", "sections": ["stakes"]}
+    stakes_calls = [e for e in result["trace"]["events"] if e["kind"] == "mcp_call_completed"
+                    and e.get("arguments", {}).get("sections") == ["stakes"]]
+    assert len(stakes_calls) == 1
+    # The model first sees stakes on the turn after ensure_game_data, before choosing its own sections.
+    decision_after_cache = model.requests[2]["history"]
+    assert "harness_context" in decision_after_cache[-1]["content"]
+    assert "stakes_g1" in decision_after_cache[-1]["content"]

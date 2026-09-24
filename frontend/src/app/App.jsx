@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navbar, NavbarLabel, NavbarSection } from '../components/navbar'
 import { api, askStream } from './api'
 import { AppShell } from './AppShell'
+import { useAuth } from './auth'
 import { AppSidebar, BrandMark } from './AppSidebar'
 import { Composer } from './Composer'
 import { EmptyState } from './EmptyState'
@@ -62,8 +63,18 @@ function describeGame(gameId, flow, row, resolution) {
   return null
 }
 
+function NoTraceAccess() {
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 pt-[8vh] sm:px-6">
+      <h1 className="text-lg/7 font-semibold text-zinc-950 dark:text-white">Traces are for the Postgame Desk team</h1>
+      <p className="mt-2 text-sm/6 text-zinc-500 dark:text-zinc-400">Your account doesn't have access to run traces.</p>
+    </div>
+  )
+}
+
 export function App() {
   let route = useLocation()
+  let { isAdmin } = useAuth()
   let [section, setView] = useState('ask')
   // Traces are URL-addressed (/traces, /traces/:runId); the other views are app state.
   let traceRoute = route.path.match(/^\/traces(?:\/([^/]+))?\/?$/)
@@ -88,6 +99,7 @@ export function App() {
       () => setGames({ status: 'error', items: [] })
     )
     refreshConversations()
+    // Also runs on sign-out, which unmounts the app.
     return () => abortRef.current?.abort()
   }, [refreshConversations])
 
@@ -148,6 +160,19 @@ export function App() {
     setPanel((p) => ({ ...p, open: false }))
     setConversation({ ...NEW_CONVERSATION, ...next })
   }
+
+  // Picking a game for an unresolved question asks it again, now pinned to that game.
+  function pickGame(game, question) {
+    startConversation({ gameId: game.game_id, gameRow: game, pendingQuestion: question })
+  }
+
+  useEffect(() => {
+    if (!conversation.pendingQuestion || !conversation.gameId || conversation.turns.length) return
+    let question = conversation.pendingQuestion
+    setConversation((c) => ({ ...c, pendingQuestion: null }))
+    ask(question)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation.pendingQuestion, conversation.gameId])
 
   async function openConversation(id) {
     if (busy || id === conversation.id) {
@@ -212,7 +237,9 @@ export function App() {
       }
     >
       {view === 'traces' ? (
-        traceRoute[1] ? (
+        isAdmin === null ? null : !isAdmin ? (
+          <NoTraceAccess />
+        ) : traceRoute[1] ? (
           <TraceDetail key={traceRoute[1]} runId={decodeURIComponent(traceRoute[1])} params={route.params} />
         ) : (
           <TracesList params={route.params} />
@@ -250,6 +277,7 @@ export function App() {
                 onCite={(packetId) => openPanel(turn.key, 'evidence', { packetId })}
                 onShowWork={() => openPanel(turn.key, 'evidence')}
                 onAsk={(q) => ask(q)}
+                onPickGame={(g) => pickGame(g, turn.question)}
                 onStop={() => abortRef.current?.abort()}
                 onRetry={() => ask(turn.question, turn.key)}
               />

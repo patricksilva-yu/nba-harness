@@ -232,6 +232,11 @@ usage, estimated cost, stopping behavior, and repeatability.
 
 ## Transition from V2
 
+> **Update (2026-09-24):** The transition is complete. The direct Responses
+> prototype, the deterministic agent, the Agents SDK modes and the MCP server's
+> older granular tools have been removed; the harness is the only analysis
+> path. The sequence below is preserved as the point-in-time plan.
+
 The current repository still contains a direct Responses function-tool
 prototype. It demonstrated typed tools, structured answers, and a shared domain
 service, but it bypasses MCP and therefore cannot be the primary capstone path.

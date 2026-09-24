@@ -4,7 +4,7 @@ const pct = (v) => (v == null ? '–' : `${(v * 100).toFixed(1)}%`)
 const num = (v, digits = 1) => (v == null ? '–' : Number(v).toFixed(digits).replace(/\.0$/, ''))
 const makes = (v) => (typeof v === 'string' ? v.replace(/\.0\b/g, '') : '–')
 
-export function gameMinute(period, clock) {
+function gameMinute(period, clock) {
   let [m, s] = String(clock).split(':').map(Number)
   let length = period <= 4 ? 12 : 5
   let start = period <= 4 ? (period - 1) * 12 : 48 + (period - 5) * 5

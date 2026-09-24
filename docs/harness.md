@@ -10,25 +10,21 @@ PostgreSQL. Revision `20260923_01` adds `harness_runs` and `20260923_02` adds
 conversation links; startup never runs DDL against PostgreSQL. Existing local DuckDB databases are initialized through
 their compatibility adapter.
 
-`POST /api/ask` defaults to `mode: "mcp_harness"` and
-`harness_configuration: "investigation"`. Example request:
+`POST /api/ask` runs the harness with `harness_configuration: "investigation"`
+unless another configuration is given. Example request:
 
 ```json
 {
   "question": "Who won this game, and what was the final score?",
   "game_id": "0042500303",
-  "mode": "mcp_harness",
   "harness_configuration": "investigation"
 }
 ```
 
-All harness runs are saved, regardless of the legacy `persist` option. The
-legacy `max_evidence` option does not truncate harness citations: every cited
-packet is returned. The response includes `analysis.headline`,
+Every run is saved and every cited packet is returned. The response includes `analysis.headline`,
 `analysis.claims`, citations, `analysis_run_id`, `conversation_id`,
 `stop_reason`, usage and the complete observable trace. `GET /api/runs/{run_id}`
-retrieves the durable record. The existing deterministic and direct Responses
-modes remain explicitly labelled development prototypes.
+retrieves the durable record.
 
 The primary harness stores its Responses API calls in the OpenAI project logs
 and emits an Agents SDK trace for each run, including streamed requests. The trace groups model decisions,
@@ -56,7 +52,7 @@ before it existed. Static hosting must rewrite unknown paths to `index.html`
 
 ### Streaming progress
 
-`POST /api/ask/stream` accepts the same body as `/api/ask` (harness mode only)
+`POST /api/ask/stream` accepts the same body as `/api/ask`
 and responds with server-sent events:
 
 ```text
@@ -135,6 +131,25 @@ cache preparation, new packet or new detail constitutes progress.
 After a failed fact-check, the next decision receives one compact copy of the
 evidence ledger and review feedback, rather than the earlier full tool transcript.
 
+### Stakes context (added 2026-09-23)
+
+Once `ensure_game_data` succeeds on a new question, the harness itself calls
+`get_game_analysis_context(sections=["stakes"])` once, before the model's next
+decision, and appends the returned packet to the history as `harness_context`.
+The call goes through the same MCP boundary, policy, budget and ledger as a
+model-proposed call, so it counts as a tool call, appears in traces and the
+step list ("Pulled the series and season context"), and its packet is citable
+and verified like any other. Follow-up runs skip it: they inherit the parent's
+ledger, which already carries the packet. Parent runs recorded before this
+change have none.
+
+Why the harness and not the model: what a game meant (a clinching Finals game,
+a forced Game 7) is relevant to almost every postgame question, but the model
+cannot know to ask for it, and summing a series across several games is exactly
+where a model invents numbers. The packet is computed in SQL; the model only
+reads it. The prompt tells the model to lead the headline with the stakes when a
+game clinched or ended a series, forced a Game 7, or changed the series lead.
+
 ## Answer contract
 
 Contract version `mcp-harness-v2` adds a headline. A draft with claims must
@@ -165,13 +180,17 @@ schema, so the model sees what each returns and what it cannot answer.
 
 | Tool / section | Returns |
 | --- | --- |
+| `stakes` section | What the game meant. Playoffs (`series_context`): round, game number, series record before and after, outcome (`clinched_series`, `forced_game_7`, `took_series_lead`, `extended_series_lead`, `tied_series`, `cut_series_deficit`), elimination-game flag and each series game's result. Regular season (`team_form`): each team's record, last 10 and streak through this game |
 | `periods` section | Points per period, score and leader at each break, each team's largest lead with its clock time, lead changes and ties |
 | `runs` section | The top three scoring stretches with start/end clock, score and margin change |
 | `snapshot`, `players`, `advanced`, `possessions`, `lineups` | Final score and traditional team box score, leading player lines, team efficiency, whole-game event counts, low-confidence rotation counts |
 | `get_game_window(game_id, period, from_clock, to_clock, end_period)` | One packet for any stretch of game time: score before and after, points, shooting and turnovers per team, per-player points and shooting, and the plays (scoring plays and turnovers only for very long windows) |
 | `get_evidence_detail` on a run | The run's plays plus per-player totals for the run |
 
-All are computed from stored play-by-play and box scores; nothing is inferred
+`stakes` is computed from the stored results of every game in the season (see
+"Season results" in the README); a series with missing earlier games is marked
+medium confidence with a caveat instead of reporting a wrong record. All other
+sections are computed from stored play-by-play and box scores; nothing is inferred
 beyond the recorded scores and event types. Windows include events exactly at
 their start clock. Contract `v3` added `get_game_window`, the `periods` section
 and section descriptions; runs recorded under earlier versions used four tools.
@@ -240,10 +259,30 @@ feedback. Tool results larger than 500 KB are rejected. The global deadline
 also covers MCP initialization; cleanup/persistence may add a small overhead.
 
 Terminal reasons include `supported`, `answered_unverified`,
-`insufficient_evidence`, `no_progress`, `tool_limit`, `iteration_limit`,
+`game_unresolved`, `insufficient_evidence`, `no_progress`, `tool_limit`, `iteration_limit`,
 `verification_limit`, `token_limit`, `cost_limit`, `time_limit`, `error`, and
 `cancelled`. Investigation exhaustion closes additional gathering; remaining
 revision/verification budgets still apply.
+
+### Unresolved games (added 2026-09-23)
+
+When `resolve_game` returns no game ID, the run stops with `game_unresolved`
+rather than `insufficient_evidence`: the question did not name one game, which
+is different from game data being unable to answer. The run's `resolution`
+keeps the resolver summary plus up to five `candidates`, and the UI shows a
+game picker instead of a failure message:
+
+- `game_not_played`: a playoff game number beyond the series' length ("Game 7"
+  of a five-game series). The summary's `series` carries the round, games
+  played, wins, winner and last game, so the UI can say "There was no Game 7.
+  NYK won the NBA Finals 4–1, ending in Game 5 on Jun 13, 2026." with a
+  "Use Game 5" button.
+- `ambiguous`: several games match; each candidate is a button.
+- `not_found`: no candidates; the UI suggests naming both teams and a date.
+
+Picking a game starts a new conversation pinned to that game and asks the same
+question again. Runs recorded before this change used `insufficient_evidence`
+for unresolved games.
 
 ## Trace persistence and retention
 

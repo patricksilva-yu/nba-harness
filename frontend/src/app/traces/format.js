@@ -2,6 +2,7 @@ export const OUTCOMES = {
   supported: ['Supported', 'green'],
   answered_unverified: ['Unverified', 'amber'],
   insufficient_evidence: ['Insufficient evidence', 'amber'],
+  game_unresolved: ['Game unresolved', 'sky'],
   no_progress: ['No progress', 'orange'],
   iteration_limit: ['Turn limit', 'orange'],
   tool_limit: ['Tool limit', 'orange'],

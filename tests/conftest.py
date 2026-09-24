@@ -19,3 +19,6 @@ def isolate_storage_configuration(monkeypatch):
     monkeypatch.setenv("NBA_STORAGE_BACKEND", "duckdb")
     monkeypatch.delenv("POSTGRES_CONNECTION_STRING", raising=False)
     monkeypatch.delenv("NBA_POSTGRES_SCHEMA", raising=False)
+    # Auth is exercised explicitly in test_auth.py; other API tests run open.
+    monkeypatch.setenv("NBA_AUTH_MODE", "disabled")
+    monkeypatch.delenv("NBA_ADMIN_USER_IDS", raising=False)

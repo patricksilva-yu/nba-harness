@@ -1,4 +1,4 @@
-import { CheckCircleIcon, ExclamationTriangleIcon, XCircleIcon } from '@heroicons/react/16/solid'
+import { CheckCircleIcon, ExclamationTriangleIcon, QuestionMarkCircleIcon, XCircleIcon } from '@heroicons/react/16/solid'
 import {
   ArrowPathIcon,
   ArrowTurnDownRightIcon,
@@ -13,12 +13,14 @@ import { Badge } from '../components/badge'
 import { Button } from '../components/button'
 import { describePacket } from './evidence'
 import { GameFlowChart } from './GameFlowChart'
+import { formatGameDate } from './GameHeader'
 import { buildSteps, STOP_TEXT } from './steps'
 
 const VERDICTS = {
   supported: { color: 'green', icon: CheckCircleIcon, label: 'Fact-checked' },
   answered_unverified: { color: 'amber', icon: ExclamationTriangleIcon, label: 'Not fact-checked' },
   insufficient_evidence: { color: 'red', icon: XCircleIcon, label: "Couldn't confirm an answer" },
+  game_unresolved: { color: 'sky', icon: QuestionMarkCircleIcon, label: 'Which game?' },
 }
 const verdictFor = (reason) => VERDICTS[reason] ?? { color: 'red', icon: XCircleIcon, label: "Couldn't finish this answer" }
 
@@ -44,7 +46,7 @@ export function firstRunWindow(result) {
   return null
 }
 
-export function CiteButton({ number, title, onClick, active }) {
+function CiteButton({ number, title, onClick, active }) {
   return (
     <button
       type="button"
@@ -240,7 +242,52 @@ function GameChip({ label, onWrongGame }) {
   )
 }
 
-function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork, onAsk }) {
+const gameLine = (g) =>
+  [g.series_game_number && g.season_type === 'Playoffs' ? `Game ${g.series_game_number}` : null, formatGameDate(g.game_date), g.label]
+    .filter(Boolean)
+    .join(' · ')
+
+// Why no single game was chosen. This is a question about which game, never a data failure.
+function unresolvedMessage(resolution) {
+  let series = resolution.series
+  if (resolution.resolution_status === 'game_not_played' && series) {
+    let round = series.round_name ?? 'series'
+    let [leader, trailer] = Object.entries(series.wins).sort((a, b) => b[1] - a[1])
+    let record = `${leader[1]}–${trailer[1]}`
+    let last = series.last_game
+    return series.winner
+      ? `There was no Game ${resolution.requested_game_number}. ${series.winner} won the ${round} ${record}, ending in Game ${series.games_played} on ${formatGameDate(last.game_date)}.`
+      : `There hasn't been a Game ${resolution.requested_game_number} yet. The ${round} is ${leader[1] === trailer[1] ? `tied ${record}` : `${leader[0]} ${record}`} after ${series.games_played} games.`
+  }
+  if (resolution.candidates?.length) return 'More than one game matches that question. Which one did you mean?'
+  return "Couldn't find a completed game that matches. Try naming both teams and a date, like “Knicks vs Spurs, June 13”, or pick a recent final from the sidebar."
+}
+
+function GamePicker({ resolution, busy, onPickGame }) {
+  let candidates = resolution.candidates ?? []
+  let suggested = resolution.resolution_status === 'game_not_played' ? resolution.series?.last_game?.game_id : null
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="max-w-[66ch] text-base/7 text-zinc-800 dark:text-zinc-200">{unresolvedMessage(resolution)}</p>
+      {candidates.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {candidates.map((g) => (
+            <Button
+              key={g.game_id}
+              {...(g.game_id === suggested ? { color: 'dark/zinc' } : { outline: true })}
+              disabled={busy}
+              onClick={() => onPickGame(g)}
+            >
+              {g.game_id === suggested ? `Use Game ${g.series_game_number}` : gameLine(g)}
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork, onAsk, onPickGame }) {
   let result = turn.result
   let analysis = result.analysis ?? {}
   let claims = analysis.claims ?? []
@@ -273,7 +320,9 @@ function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork,
         <span>
           {answered
             ? `${claims.length} claim${claims.length === 1 ? '' : 's'} · ${checks} check${checks === 1 ? '' : 's'}`
-            : 'No supported answer'}
+            : result.stop_reason === 'game_unresolved'
+              ? "Couldn't tell which game you meant"
+              : 'No supported answer'}
           {removed.length ? ` · ${removed.length} claim${removed.length === 1 ? '' : 's'} removed` : ''}
         </span>
       </div>
@@ -322,6 +371,8 @@ function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork,
             </div>
           )}
         </>
+      ) : result.stop_reason === 'game_unresolved' ? (
+        <GamePicker resolution={result.resolution ?? {}} busy={busy} onPickGame={onPickGame} />
       ) : (
         <p className="max-w-[66ch] text-base/7 text-zinc-800 dark:text-zinc-200">
           {result.stop_reason === 'insufficient_evidence'
@@ -357,7 +408,7 @@ function Answer({ turn, flow, showChart, activePacket, busy, onCite, onShowWork,
   )
 }
 
-export function Turn({ turn, gameLabel, flow, showChart, activePacket, busy, onOpenStep, onCite, onShowWork, onAsk, onStop, onRetry, onWrongGame }) {
+export function Turn({ turn, gameLabel, flow, showChart, activePacket, busy, onOpenStep, onCite, onShowWork, onAsk, onPickGame, onStop, onRetry, onWrongGame }) {
   let running = turn.status === 'running'
   return (
     <section id={`turn-${turn.key}`} className="flex scroll-mt-20 flex-col gap-3.5">
@@ -383,6 +434,7 @@ export function Turn({ turn, gameLabel, flow, showChart, activePacket, busy, onO
           onCite={onCite}
           onShowWork={onShowWork}
           onAsk={onAsk}
+          onPickGame={onPickGame}
         />
       )}
       {turn.status === 'cancelled' && (

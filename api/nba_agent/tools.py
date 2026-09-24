@@ -16,7 +16,7 @@ from api.nba_agent.official_ingest import (
     import_official_game_bundle,
 )
 from api.nba_agent.storage import StorageConnection, StorageError
-from api.nba_agent.storage.repositories import AnalysisRunRepository, EvidenceRepository
+from api.nba_agent.storage.repositories import EvidenceRepository
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -123,7 +123,8 @@ def find_recent_completed_games_for_resolution(
                 {
                     "season_type": type_to_search,
                     "status": "error",
-                    "error": str(exc),
+                    # The exception type only: upstream messages can carry request detail.
+                    "error": type(exc).__name__,
                 }
             )
     games = sorted(games_by_id.values(), key=lambda item: (item["game_date"], item["game_id"]), reverse=True)
@@ -179,26 +180,86 @@ TEAM_ALIASES = {
 }
 
 
+# Abbreviations that are also everyday words ("it was close", "36 min") count
+# only when typed in capitals, the way a team abbreviation is written.
+CAPITALS_ONLY_ALIASES = {"was", "min", "den", "mil", "sac", "por"}
+
+
 def matching_team_abbrs(query: str) -> set[str]:
+    """Teams named in a question, matched as whole words so "show" is not Houston."""
     normalized = query.lower()
     matches: set[str] = set()
     for abbr, aliases in TEAM_ALIASES.items():
         for alias in aliases:
-            if alias in normalized:
+            capitals = alias in CAPITALS_ONLY_ALIASES
+            pattern = rf"\b{re.escape(alias.upper() if capitals else alias)}\b"
+            if re.search(pattern, query if capitals else normalized):
                 matches.add(abbr.upper())
                 break
     return matches
 
 
+MONTHS = {name: number for number, names in enumerate(
+    [("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
+     ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+     ("dec", "december")], start=1) for name in names}
+MONTH_PATTERN = "|".join(sorted(MONTHS, key=len, reverse=True))
+
+
+def resolved_date(year: int | None, month: int, day: int, today: date) -> date | None:
+    """A written date; without a year, the most recent such date not in the future."""
+    if year is not None and year < 100:
+        year += 2000
+    try:
+        if year is not None:
+            return date(year, month, day)
+        candidate = date(today.year, month, day)
+        return candidate if candidate <= today else date(today.year - 1, month, day)
+    except ValueError:
+        return None
+
+
 def requested_game_date(query: str, today: date | None = None) -> str | None:
     text = query.lower()
+    today = today or date.today()
     explicit = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
     if explicit:
         return explicit.group(1)
-    today = today or date.today()
+    written = (
+        # "April 12, 2026", "Apr 12 2026", "April 12th", "April 12"
+        re.search(rf"\b({MONTH_PATTERN})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?:,?\s+(\d{{4}}))?", text),
+        # "12 April 2026", "12th of April"
+        re.search(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({MONTH_PATTERN})\b(?:,?\s+(\d{{4}}))?", text),
+    )
+    if written[0]:
+        month, day, year = written[0].groups()
+        found = resolved_date(int(year) if year else None, MONTHS[month], int(day), today)
+        if found:
+            return str(found)
+    if written[1]:
+        day, month, year = written[1].groups()
+        found = resolved_date(int(year) if year else None, MONTHS[month], int(day), today)
+        if found:
+            return str(found)
+    # US numeric dates: "4/12/2026", "4/12/26", or "on 4/12". A bare "5/12" is
+    # more often a shooting split ("5/12 from three") than a date.
+    numeric = (re.search(r"\b(\d{1,2})/(\d{1,2})/(\d{4}|\d{2})\b", text)
+               or re.search(r"\bon\s+(\d{1,2})/(\d{1,2})()(?![/\d])", text))
+    if numeric:
+        month, day, year = numeric.groups()
+        found = resolved_date(int(year) if year else None, int(month), int(day), today) if 1 <= int(month) <= 12 else None
+        if found:
+            return str(found)
     if "last night" in text or "yesterday" in text:
         return str(today - timedelta(days=1))
     return None
+
+
+def season_for_date(value: str) -> str:
+    """NBA season containing a date: seasons start in October."""
+    day = date.fromisoformat(value)
+    start_year = day.year if day.month >= 10 else day.year - 1
+    return f"{start_year}-{str(start_year + 1)[-2:]}"
 
 
 def requests_latest_game(query: str) -> bool:
@@ -234,6 +295,9 @@ def requested_playoff_round(query: str) -> int | None:
     return None
 
 
+PLAYOFF_ROUND_NAMES = {1: "First Round", 2: "Conference Semifinals", 3: "Conference Finals", 4: "NBA Finals"}
+
+
 def playoff_position(game_id: str) -> tuple[int, int] | None:
     """(round, game number) from an NBA playoff game id: 004 YY 00 round series game."""
     match = re.fullmatch(r"004\d{2}00(\d)\d(\d)", str(game_id))
@@ -265,6 +329,62 @@ def same_matchup(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return {a["home_team_abbr"], a["away_team_abbr"]} == {b["home_team_abbr"], b["away_team_abbr"]}
 
 
+def compact_game(game: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "game_id": game["game_id"],
+        "game_date": game["game_date"],
+        "label": game["label"],
+        "home_team_abbr": game["home_team_abbr"],
+        "away_team_abbr": game["away_team_abbr"],
+        "home_score": game["home_score"],
+        "away_score": game["away_score"],
+        "match_score": game.get("match_score"),
+        "series_game_number": game.get("series_game_number"),
+        "season_type": game.get("season_type"),
+    }
+
+
+def unplayed_series_game(
+    query: str,
+    series_games: list[dict[str, Any]],
+    requested_game_number: int,
+    matched_teams: set[str],
+    recent: dict[str, Any],
+) -> dict[str, Any] | None:
+    """A numbered game beyond the series' length: say how the series went instead of guessing."""
+    latest = max(series_games, key=lambda g: (g["game_date"], g["game_id"]))
+    series = sorted((g for g in series_games if same_matchup(g, latest) and g.get("playoff_round") == latest.get("playoff_round")),
+                    key=lambda g: (g["game_date"], g["game_id"]))
+    played = max(g["series_game_number"] for g in series)
+    if requested_game_number <= played:
+        return None
+    wins: dict[str, int] = {latest["home_team_abbr"]: 0, latest["away_team_abbr"]: 0}
+    for game in series:
+        winner = game["home_team_abbr"] if game["home_score"] > game["away_score"] else game["away_team_abbr"]
+        wins[winner] += 1
+    leader = max(wins, key=wins.get)
+    return {
+        "summary": {
+            "resolution_status": "game_not_played",
+            "query": query,
+            "matched_teams": sorted(matched_teams),
+            "requested_game_number": requested_game_number,
+            "series": {
+                "round": latest.get("playoff_round"),
+                "round_name": PLAYOFF_ROUND_NAMES.get(latest.get("playoff_round")),
+                "games_played": played,
+                "wins": wins,
+                "winner": leader if wins[leader] == 4 else None,
+                "last_game": compact_game(series[-1]),
+            },
+            "searched_season_types": recent.get("summary", {}).get("searched_season_types", []),
+        },
+        "candidates": [compact_game(game) for game in reversed(series)],
+        "source_status": recent.get("source_status", []),
+        "warnings": recent.get("warnings", []) + [f"Game {requested_game_number} of this series was not played."],
+    }
+
+
 def resolve_game_reference(
     query: str,
     season: str | None = None,
@@ -272,6 +392,10 @@ def resolve_game_reference(
     limit: int = 20,
     timeout: int = 20,
 ) -> dict[str, Any]:
+    requested_date = requested_game_date(query)
+    # A dated game belongs to the season containing that date, not the current one.
+    if requested_date and season is None:
+        season = season_for_date(requested_date)
     requested_year_match = re.search(r"\b(?:19|20)\d{2}\b", query)
     requested_year = int(requested_year_match.group()) if requested_year_match else None
     requested_game_number = requested_playoff_game_number(query)
@@ -281,7 +405,8 @@ def resolve_game_reference(
         season = f"{requested_year - 1}-{str(requested_year)[-2:]}"
     # Resolution needs a deeper source window than the display limit. Otherwise
     # an older playoff game can be missed after later rounds add more games.
-    source_limit = max(limit, 120)
+    # A dated question can name any game in its season, so search all of it.
+    source_limit = 10_000 if requested_date else max(limit, 120)
     recent = find_recent_completed_games_for_resolution(
         season=season,
         season_type=season_type,
@@ -290,7 +415,6 @@ def resolve_game_reference(
     )
     games = recent.get("games", [])
     matched_teams = matching_team_abbrs(query)
-    requested_date = requested_game_date(query)
     requested_round = requested_playoff_round(query)
     latest = not requested_date and requests_latest_game(query)
     preference = "exact_date_match" if requested_date else "latest_game" if latest else "disambiguate_repeated_matchups"
@@ -330,6 +454,9 @@ def resolve_game_reference(
             candidates = matches
             preference = "playoff_series_game_match"
         elif series_candidates and requested_game_number:
+            not_played = unplayed_series_game(query, series_candidates, requested_game_number, matched_teams, recent)
+            if not_played:
+                return not_played
             candidates = series_candidates
 
     if not candidates:
@@ -343,25 +470,14 @@ def resolve_game_reference(
                 "requested_season_type": season_type,
                 "searched_season_types": recent.get("summary", {}).get("searched_season_types", []),
             },
-            "recent_games": games,
+            # The source window can be a whole season for dated questions; return only the display limit.
+            "recent_games": games[:limit],
             "source_status": recent.get("source_status", []),
             "warnings": recent.get("warnings", []) + ["No recent completed game matched the query."],
         }
 
     candidates = sorted(candidates, key=lambda game: (game["match_score"], game["game_date"], game["game_id"]), reverse=True)
     selected = candidates[0]
-    def compact_game(game: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "game_id": game["game_id"],
-            "game_date": game["game_date"],
-            "label": game["label"],
-            "home_team_abbr": game["home_team_abbr"],
-            "away_team_abbr": game["away_team_abbr"],
-            "home_score": game["home_score"],
-            "away_score": game["away_score"],
-            "match_score": game.get("match_score"),
-            "series_game_number": game.get("series_game_number"),
-        }
 
     same_score_candidates = [
         candidate
@@ -418,19 +534,6 @@ def resolve_game_reference(
     }
 
 
-def persist_analysis_run(
-    *,
-    game_id: str,
-    user_question: str,
-    memo_markdown: str,
-    packet_ids: list[str],
-    db_path: Path = DEFAULT_DB,
-) -> str:
-    return AnalysisRunRepository(get_storage(db_path)).create(
-        game_id, user_question, memo_markdown, packet_ids
-    )
-
-
 def get_cached_games_status(
     db_path: Path = DEFAULT_DB,
     limit: int = 20,
@@ -461,6 +564,8 @@ def get_cached_games_status(
             (SELECT COUNT(*) FROM play_by_play_events pbp WHERE pbp.game_id = g.game_id) AS pbp_rows,
             (SELECT COUNT(*) FROM evidence_packets ep WHERE ep.game_id = g.game_id) AS evidence_rows
         FROM games g
+        -- Results-only rows (every game's final score) are not cached games.
+        WHERE EXISTS (SELECT 1 FROM box_scores_team bst WHERE bst.game_id = g.game_id)
         ORDER BY g.game_date DESC NULLS LAST, g.game_id DESC
         LIMIT ?
         """,
@@ -1727,6 +1832,130 @@ def get_period_summary(game_id: str, db_path: Path = DEFAULT_DB, persist: bool =
     }
     return with_persisted_packets(game_id, {
         "summary": {"game_id": game_id, "periods": len(periods)},
+        "evidence_packets": [packet],
+    }, db_path, persist=persist)
+
+
+RESULT_COLUMNS = "game_id, game_date, home_team_abbr, away_team_abbr, home_score, away_score"
+
+
+def result_rows(con: StorageConnection, sql: str, parameters: list[Any]) -> list[dict[str, Any]]:
+    rows = con.execute(sql, parameters).fetchall()
+    games = []
+    for game_id, game_date, home, away, home_score, away_score in rows:
+        winner = home if home_score > away_score else away
+        games.append({"game_id": str(game_id), "date": str(game_date)[:10], "home": home, "away": away,
+                      "score": f"{away} {away_score}, {home} {home_score}", "winner": winner})
+    return games
+
+
+def series_context(con: StorageConnection, game: dict[str, Any]) -> tuple[dict[str, Any], str, list[str]]:
+    """Series state through this game, counted from every stored result of the matchup."""
+    position = playoff_position(game["game_id"])
+    if position:
+        # Playoff ids encode the series: 004 YY 00 round series game.
+        games = result_rows(con, f"SELECT {RESULT_COLUMNS} FROM games WHERE game_id LIKE ? AND game_date <= ? "
+                                 "ORDER BY game_date, game_id", [game["game_id"][:9] + "%", game["game_date"]])
+        numbers = [playoff_position(g["game_id"])[1] for g in games]
+    else:
+        games = result_rows(con, f"SELECT {RESULT_COLUMNS} FROM games WHERE season_id = ? AND season_type = ? "
+                                 "AND ((home_team_abbr = ? AND away_team_abbr = ?) OR (home_team_abbr = ? AND away_team_abbr = ?)) "
+                                 "AND game_date <= ? ORDER BY game_date, game_id",
+                            [game["season_id"], game["season_type"], game["home_team_abbr"], game["away_team_abbr"],
+                             game["away_team_abbr"], game["home_team_abbr"], game["game_date"]])
+        numbers = list(range(1, len(games) + 1))
+    teams = (game["away_team_abbr"], game["home_team_abbr"])
+    wins = {team: 0 for team in teams}
+    for g in games[:-1]:
+        wins[g["winner"]] += 1
+    before = dict(wins)
+    this = games[-1]
+    wins[this["winner"]] += 1
+    winner = this["winner"]
+    loser = next(team for team in teams if team != winner)
+    number = numbers[-1]
+    complete = numbers == list(range(1, len(numbers) + 1))
+    if wins[winner] == 4:
+        outcome = "clinched_series"
+    elif wins[winner] == wins[loser]:
+        outcome = "forced_game_7" if wins[winner] == 3 else "tied_series"
+    elif wins[winner] > wins[loser]:
+        outcome = "took_series_lead" if before[winner] <= before[loser] else "extended_series_lead"
+    else:
+        outcome = "cut_series_deficit"
+    round_name = PLAYOFF_ROUND_NAMES.get(position[0]) if position else None
+    stage = f"Game {number}" + (f" of the {round_name}" if round_name else " of the playoff series")
+    series_text = f"{winner} {wins[winner]}-{wins[loser]}" if wins[winner] >= wins[loser] else f"{loser} {wins[loser]}-{wins[winner]}"
+    seed = {
+        "clinched_series": f"{winner} won {stage} to win the series 4-{wins[loser]} over {loser}.",
+        "forced_game_7": f"{winner} won {stage} to even the series 3-3 and force Game 7.",
+        "tied_series": f"{winner} won {stage} to tie the series {wins[winner]}-{wins[loser]}.",
+    }.get(outcome, f"{winner} won {stage}; the series stands {series_text}.")
+    if outcome == "clinched_series" and position and position[0] == 4:
+        seed = f"{winner} won {stage} to clinch the NBA championship, 4-{wins[loser]} over {loser}."
+    metrics = {
+        "season_type": game["season_type"], "round": position[0] if position else None, "round_name": round_name,
+        "game_in_series": number, "series_before": before, "series_after": wins, "game_winner": winner,
+        "outcome": outcome, "elimination_game": max(before.values()) == 3, "series_winner": winner if wins[winner] == 4 else None,
+        "games": [{"game_in_series": n, **g} for n, g in zip(numbers, games)],
+    }
+    caveats = [] if complete else ["Earlier games of this series are missing from stored results; the series record may be incomplete."]
+    return metrics, seed, caveats
+
+
+def team_form(con: StorageConnection, game: dict[str, Any], team: str) -> dict[str, Any]:
+    games = result_rows(con, f"SELECT {RESULT_COLUMNS} FROM games WHERE season_id = ? AND season_type = ? "
+                             "AND (home_team_abbr = ? OR away_team_abbr = ?) AND game_date <= ? ORDER BY game_date, game_id",
+                        [game["season_id"], game["season_type"], team, team, game["game_date"]])
+    results = ["W" if g["winner"] == team else "L" for g in games]
+    streak = 0
+    for result in reversed(results):
+        if result != results[-1]:
+            break
+        streak += 1
+    last_10 = results[-10:]
+    return {"record": f"{results.count('W')}-{results.count('L')}", "games_counted": len(results),
+            "last_10": f"{last_10.count('W')}-{last_10.count('L')}",
+            "streak": f"{results[-1]}{streak}" if results else None}
+
+
+def get_stakes_context(game_id: str, db_path: Path = DEFAULT_DB, persist: bool = False) -> dict[str, Any]:
+    """What the game meant: playoff series state, or each team's record and recent form."""
+    con = get_storage(db_path).open()
+    try:
+        row = con.execute(
+            "SELECT game_id, season_id, game_date, season_type, home_team_abbr, away_team_abbr, source FROM games WHERE game_id = ?",
+            [game_id],
+        ).fetchone()
+        if row is None:
+            return {"summary": {"game_id": game_id, "resolution_status": "not_found"}, "evidence_packets": []}
+        game = dict(zip(("game_id", "season_id", "game_date", "season_type", "home_team_abbr", "away_team_abbr", "source"), row))
+        if str(game["season_type"]).lower() == "playoffs":
+            metrics, seed, caveats = series_context(con, game)
+            packet_type = "series_context"
+        else:
+            teams = (game["away_team_abbr"], game["home_team_abbr"])
+            forms = {team: team_form(con, game, team) for team in teams}
+            metrics = {"season_type": game["season_type"], "through_date": str(game["game_date"])[:10], "teams": forms}
+            seed = "After this game: " + "; ".join(
+                f"{team} {form['record']} ({form['last_10']} in last 10, streak {form['streak']})" for team, form in forms.items()
+            ) + "."
+            caveats = ["Records count stored results for this season; they are complete once the season's results are synced."]
+            packet_type = "team_form"
+    finally:
+        con.close()
+    packet = {
+        "packet_id": packet_id("stakes", game_id),
+        "type": packet_type,
+        "claim_seed": seed,
+        "metrics": metrics,
+        "source": {"provider": "nba_official", "detail": "nba_api:LeagueGameLog results"},
+        "evidence_level": "core",
+        "confidence": "medium" if caveats and packet_type == "series_context" else "high",
+        "caveats": caveats,
+    }
+    return with_persisted_packets(game_id, {
+        "summary": {"game_id": game_id, "type": packet_type},
         "evidence_packets": [packet],
     }, db_path, persist=persist)
 

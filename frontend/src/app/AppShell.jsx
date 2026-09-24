@@ -3,7 +3,7 @@ import { Bars2Icon, XMarkIcon } from '@heroicons/react/20/solid'
 import { useEffect, useState } from 'react'
 import { NavbarItem } from '../components/navbar'
 
-export function useMediaQuery(query) {
+function useMediaQuery(query) {
   let [matches, setMatches] = useState(() => window.matchMedia(query).matches)
   useEffect(() => {
     let media = window.matchMedia(query)

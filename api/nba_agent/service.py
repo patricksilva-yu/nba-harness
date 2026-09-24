@@ -1,8 +1,7 @@
 """Application-facing NBA domain service.
 
-The web API, Responses API function tools, and MCP adapter all call this
-module. Transport concerns belong at the edges; NBA data and evidence rules
-live here.
+The MCP server and ingestion jobs call this module. Transport concerns belong
+at the edges; NBA data and evidence rules live here.
 """
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
-from api.nba_agent.agent import resolve_or_use_game_id, season_type_for_ingest
 from api.nba_agent.tools import (
     DEFAULT_DB,
     ensure_game_cached,
@@ -22,11 +20,21 @@ from api.nba_agent.tools import (
     get_period_summary,
     get_player_game_context,
     get_possession_summary,
+    get_stakes_context,
     rehydrate_evidence_packet,
+    resolve_game_reference,
 )
 
 
-ANALYSIS_SECTIONS = {"snapshot", "periods", "advanced", "runs", "possessions", "players", "lineups"}
+ANALYSIS_SECTIONS = {"stakes", "snapshot", "periods", "advanced", "runs", "possessions", "players", "lineups"}
+
+
+def resolve_or_use_game_id(question: str, game_id: str | None, season: str | None, season_type: str,
+                           timeout: int) -> dict[str, Any]:
+    if game_id:
+        return {"summary": {"resolution_status": "provided", "game_id": game_id, "confidence": "high"},
+                "game": {"game_id": game_id}, "warnings": []}
+    return resolve_game_reference(query=question, season=season, season_type=season_type, limit=20, timeout=timeout)
 
 
 class NBAService:
@@ -60,32 +68,6 @@ class NBAService:
             force_refresh=force_refresh,
         )
 
-    def prepare_game(
-        self,
-        question: str,
-        game_id: str | None = None,
-        season: str | None = None,
-        season_type: str = "Auto",
-        timeout: int = 20,
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        resolution = self.resolve_game(question, game_id, season, season_type, timeout)
-        resolved_id = resolution.get("summary", {}).get("game_id")
-        if not resolved_id:
-            return resolution, None
-        cache = self.ensure_game_data(
-            resolved_id,
-            season,
-            season_type_for_ingest(resolution, season_type),
-            timeout,
-        )
-        snapshot = get_game_snapshot(resolved_id, self.db_path, persist=False)
-        resolution["summary"] = {
-            **resolution["summary"],
-            "label": resolution["summary"].get("label") or snapshot.get("summary", {}).get("label"),
-            "game_date": resolution["summary"].get("game_date") or snapshot.get("summary", {}).get("date"),
-        }
-        return resolution, cache
-
     def get_analysis_context(
         self,
         game_id: str,
@@ -97,6 +79,7 @@ class NBAService:
         if unknown:
             raise ValueError(f"Unknown analysis sections: {', '.join(unknown)}")
         loaders = {
+            "stakes": lambda: get_stakes_context(game_id, self.db_path, persist=persist),
             "snapshot": lambda: get_game_snapshot(game_id, self.db_path, persist=persist),
             "periods": lambda: get_period_summary(game_id, self.db_path, persist=persist),
             "advanced": lambda: get_advanced_game_context(game_id, self.db_path, persist=persist),
@@ -126,8 +109,3 @@ class NBAService:
 
     def get_evidence_detail(self, packet_id: str, game_id: str) -> dict[str, Any]:
         return rehydrate_evidence_packet(packet_id, game_id, self.db_path)
-
-
-def service(db_path: Path = DEFAULT_DB) -> NBAService:
-    return NBAService(db_path)
-

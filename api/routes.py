@@ -7,15 +7,13 @@ from typing import Any
 import asyncio
 import json
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from api.auth import Viewer, require_admin, require_user
 from api.models import AskRequest, IngestionRequest
-from api.nba_agent.agent import run_agent
-from api.nba_agent.db import get_storage, storage_config
+from api.nba_agent.db import get_storage
 from api.nba_agent.ingestion_jobs import create_ingestion_job, get_ingestion_job, run_ingestion_job
-from api.nba_agent.openai_agent import openai_agent_config, run_openai_agent
-from api.nba_agent.responses_agent import run_responses_agent
 from api.nba_agent.harness import FollowUpError, follow_up_context, public_run, run_harness
 from api.nba_agent.harness.contracts import Limits
 from api.nba_agent.harness.model import ResponsesModel
@@ -34,12 +32,13 @@ from api.nba_agent.tools import (
 router = APIRouter()
 
 
-def harness_follow_up(request: AskRequest) -> dict | None:
-    """Validate a follow-up before any run starts, so failures are plain HTTP errors."""
+def harness_follow_up(request: AskRequest, viewer: Viewer) -> dict | None:
+    """Validate a follow-up before any run starts, so failures are plain HTTP errors.
+
+    Only the user who started a conversation can continue it; to anyone else it reads as missing.
+    """
     if not request.parent_run_id:
         return None
-    if request.mode != "mcp_harness":
-        raise HTTPException(status_code=400, detail="Follow-up questions require mcp_harness mode")
     try:
         context = follow_up_context(HarnessRunRepository(get_storage()), request.parent_run_id)
     except FollowUpError as exc:
@@ -48,6 +47,8 @@ def harness_follow_up(request: AskRequest) -> dict | None:
                             detail="Earlier run not found" if missing else "Earlier run has not finished") from exc
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
+    if viewer.user_id and context["user_id"] != viewer.user_id:
+        raise HTTPException(status_code=404, detail="Earlier run not found")
     if request.game_id and context["game_id"] and request.game_id != context["game_id"]:
         raise HTTPException(status_code=400, detail="Follow-up questions stay on the earlier run's game")
     return context
@@ -84,7 +85,12 @@ def recent_games(
     )
 
 
-@router.get("/api/db-status")
+@router.get("/api/me")
+def me(viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
+    return {"user_id": viewer.user_id, "is_admin": viewer.is_admin}
+
+
+@router.get("/api/db-status", dependencies=[Depends(require_admin)])
 def db_status(limit: int = 20) -> dict[str, Any]:
     return get_cached_games_status(limit=limit)
 
@@ -92,12 +98,6 @@ def db_status(limit: int = 20) -> dict[str, Any]:
 @router.get("/api/games/{game_id}/box-score")
 def box_score(game_id: str, level: str = "team", detail: bool = False) -> dict[str, Any]:
     return get_box_score(game_id=game_id, level=level, detail=detail)
-
-
-@router.get("/api/openai-agent/config")
-def openai_config() -> dict[str, Any]:
-    config = storage_config()
-    return {**openai_agent_config(), "primary_mode": "mcp_harness", "storage": {"backend": config["backend"]}}
 
 
 @router.get("/api/games/{game_id}/flow")
@@ -109,17 +109,18 @@ def game_flow(game_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/conversations")
-def conversations(limit: int = 20) -> dict[str, Any]:
+def conversations(limit: int = 20, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
     try:
-        return {"conversations": HarnessRunRepository(get_storage()).recent_conversations(min(max(limit, 1), 100))}
+        return {"conversations": HarnessRunRepository(get_storage()).recent_conversations(
+            min(max(limit, 1), 100), viewer.user_id)}
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
 
 
 @router.get("/api/conversations/{conversation_id}")
-def conversation(conversation_id: str) -> dict[str, Any]:
+def conversation(conversation_id: str, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
     try:
-        records = HarnessRunRepository(get_storage()).conversation(conversation_id)
+        records = HarnessRunRepository(get_storage()).conversation(conversation_id, viewer.user_id)
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
     if not records:
@@ -128,17 +129,17 @@ def conversation(conversation_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/runs/{run_id}")
-def harness_run(run_id: str) -> dict[str, Any]:
+def harness_run(run_id: str, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
     try:
         record = HarnessRunRepository(get_storage()).get(run_id)
     except StorageError as exc:
         raise HTTPException(status_code=503, detail="Run storage unavailable; verify migrations") from exc
-    if record is None:
+    if record is None or not (viewer.is_admin or record.get("user_id") == viewer.user_id):
         raise HTTPException(status_code=404, detail="Run not found")
     return record
 
 
-@router.get("/api/traces")
+@router.get("/api/traces", dependencies=[Depends(require_admin)])
 def traces(limit: int = 50, offset: int = 0, q: str | None = None, status: str | None = None,
            stop_reason: str | None = None, conversation_id: str | None = None) -> dict[str, Any]:
     try:
@@ -149,7 +150,7 @@ def traces(limit: int = 50, offset: int = 0, q: str | None = None, status: str |
     return {"traces": runs, "total": total}
 
 
-@router.get("/api/traces/{run_id}")
+@router.get("/api/traces/{run_id}", dependencies=[Depends(require_admin)])
 def trace_detail(run_id: str) -> dict[str, Any]:
     try:
         record = HarnessRunRepository(get_storage()).get(run_id)
@@ -160,7 +161,7 @@ def trace_detail(run_id: str) -> dict[str, Any]:
     return {"trace": summarize(record), "spans": build_spans(record)}
 
 
-@router.post("/api/ingestion-jobs", status_code=202)
+@router.post("/api/ingestion-jobs", status_code=202, dependencies=[Depends(require_admin)])
 def start_ingestion(request: IngestionRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     job = create_ingestion_job(request.game_id)
     background_tasks.add_task(
@@ -174,7 +175,7 @@ def start_ingestion(request: IngestionRequest, background_tasks: BackgroundTasks
     return job
 
 
-@router.get("/api/ingestion-jobs/{job_id}")
+@router.get("/api/ingestion-jobs/{job_id}", dependencies=[Depends(require_admin)])
 def ingestion_status(job_id: str) -> dict[str, Any]:
     job = get_ingestion_job(job_id)
     if not job:
@@ -183,14 +184,12 @@ def ingestion_status(job_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/ask/stream")
-async def ask_stream(request: AskRequest) -> StreamingResponse:
+async def ask_stream(request: AskRequest, viewer: Viewer = Depends(require_user)) -> StreamingResponse:
     """Server-sent events: one `step` per durable harness event, then `result` or `error`.
 
     Closing the connection cancels the run, which is recorded as `cancelled`.
     """
-    if request.mode != "mcp_harness":
-        raise HTTPException(status_code=400, detail="Streaming is available for mcp_harness mode only")
-    follow_up = harness_follow_up(request)
+    follow_up = harness_follow_up(request, viewer)
     try:
         limits = Limits.from_environment()
         model = ResponsesModel()
@@ -203,7 +202,7 @@ async def ask_stream(request: AskRequest) -> StreamingResponse:
             result = await run_harness(
                 question=request.question, game_id=request.game_id or None, season=request.season or None,
                 season_type=request.season_type, configuration=request.harness_configuration,
-                limits=limits, model=model, follow_up=follow_up, on_event=queue.put_nowait,
+                limits=limits, model=model, follow_up=follow_up, on_event=queue.put_nowait, user_id=viewer.user_id,
             )
             queue.put_nowait(("result", public_run(result["trace"])))
         except Exception:
@@ -231,48 +230,15 @@ async def ask_stream(request: AskRequest) -> StreamingResponse:
 
 
 @router.post("/api/ask")
-def ask(request: AskRequest) -> dict[str, Any]:
-    if request.mode == "mcp_harness":
-        follow_up = harness_follow_up(request)
-        try:
-            return asyncio.run(run_harness(
-                question=request.question, game_id=request.game_id or None, season=request.season or None,
-                season_type=request.season_type, configuration=request.harness_configuration, follow_up=follow_up,
-            ))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Invalid harness configuration; check model and resource settings") from exc
-        except (StorageError, RuntimeError) as exc:
-            raise HTTPException(status_code=503, detail="Harness unavailable; check configuration and database migrations") from exc
-    if request.mode == "responses_tools":
-        try:
-            return run_responses_agent(
-                question=request.question,
-                game_id=request.game_id or None,
-                season=request.season or None,
-                season_type=request.season_type,
-                max_evidence=request.max_evidence,
-                persist=request.persist,
-            )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if request.mode != "deterministic":
-        try:
-            return run_openai_agent(
-                question=request.question,
-                game_id=request.game_id or None,
-                season=request.season or None,
-                season_type=request.season_type,
-                max_evidence=request.max_evidence,
-                persist=request.persist,
-                mode=request.mode,
-            )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return run_agent(
-        question=request.question,
-        game_id=request.game_id or None,
-        season=request.season or None,
-        season_type=request.season_type,
-        max_evidence=request.max_evidence,
-        persist=request.persist,
-    )
+def ask(request: AskRequest, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
+    follow_up = harness_follow_up(request, viewer)
+    try:
+        return asyncio.run(run_harness(
+            question=request.question, game_id=request.game_id or None, season=request.season or None,
+            season_type=request.season_type, configuration=request.harness_configuration, follow_up=follow_up,
+            user_id=viewer.user_id,
+        ))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid harness configuration; check model and resource settings") from exc
+    except (StorageError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Harness unavailable; check configuration and database migrations") from exc

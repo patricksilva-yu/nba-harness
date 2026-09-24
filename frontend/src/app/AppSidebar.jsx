@@ -1,5 +1,7 @@
-import { PlusIcon } from '@heroicons/react/16/solid'
+import { ArrowRightStartOnRectangleIcon, ChevronUpIcon, PlusIcon } from '@heroicons/react/16/solid'
 import { ChatBubbleLeftRightIcon, ShieldCheckIcon, Square3Stack3DIcon } from '@heroicons/react/20/solid'
+import { Avatar } from '../components/avatar'
+import { Dropdown, DropdownButton, DropdownDivider, DropdownHeader, DropdownItem, DropdownLabel, DropdownMenu } from '../components/dropdown'
 import {
   Sidebar,
   SidebarBody,
@@ -10,6 +12,7 @@ import {
   SidebarLabel,
   SidebarSection,
 } from '../components/sidebar'
+import { useAuth } from './auth'
 import { formatGameDate } from './GameHeader'
 import { team } from './teams'
 
@@ -42,7 +45,34 @@ function Placeholder({ children }) {
   return <p className="px-2 py-1 text-sm/6 text-zinc-500 dark:text-zinc-400">{children}</p>
 }
 
+function Account() {
+  let { user, signOut } = useAuth()
+  if (!user) return null
+  let email = user.email ?? 'Your account'
+  return (
+    <Dropdown>
+      <DropdownButton as={SidebarItem}>
+        <Avatar initials={email.slice(0, 1)} className="size-6 bg-zinc-900 text-white dark:bg-white dark:text-zinc-900" />
+        <SidebarLabel>{email}</SidebarLabel>
+        <ChevronUpIcon />
+      </DropdownButton>
+      <DropdownMenu anchor="top start" className="min-w-(--button-width)">
+        <DropdownHeader>
+          <div className="text-xs/5 text-zinc-500 dark:text-zinc-400">Signed in as</div>
+          <div className="truncate text-sm/5 font-medium text-zinc-950 dark:text-white">{email}</div>
+        </DropdownHeader>
+        <DropdownDivider />
+        <DropdownItem onClick={signOut}>
+          <ArrowRightStartOnRectangleIcon />
+          <DropdownLabel>Sign out</DropdownLabel>
+        </DropdownItem>
+      </DropdownMenu>
+    </Dropdown>
+  )
+}
+
 export function AppSidebar({ view, games, conversations, currentGameId, currentConversationId, onView, onNewQuestion, onSelectGame, onSelectConversation }) {
+  let { isAdmin } = useAuth()
   return (
     <Sidebar>
       <SidebarHeader>
@@ -114,10 +144,13 @@ export function AppSidebar({ view, games, conversations, currentGameId, currentC
             <ShieldCheckIcon />
             <SidebarLabel>How reliable is this?</SidebarLabel>
           </SidebarItem>
-          <SidebarItem href="/traces" current={view === 'traces'}>
-            <Square3Stack3DIcon />
-            <SidebarLabel>Traces</SidebarLabel>
-          </SidebarItem>
+          {isAdmin && (
+            <SidebarItem href="/traces" current={view === 'traces'}>
+              <Square3Stack3DIcon />
+              <SidebarLabel>Traces</SidebarLabel>
+            </SidebarItem>
+          )}
+          <Account />
         </SidebarSection>
       </SidebarFooter>
     </Sidebar>

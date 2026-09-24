@@ -1,21 +1,34 @@
+import { supabase } from './supabase'
+
 // Empty in development (Vite forwards /api); set for a separately hosted API.
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(message, status) {
     super(message)
     this.status = status
   }
 }
 
-async function request(path, options) {
+// The signed-in user's access token; supabase-js refreshes it before expiry.
+async function accessToken({ refresh = false } = {}) {
+  if (!supabase) return null
+  let { data } = refresh ? await supabase.auth.refreshSession() : await supabase.auth.getSession()
+  return data.session?.access_token ?? null
+}
+
+async function request(path, options = {}, { retried = false } = {}) {
+  let token = await accessToken({ refresh: retried })
+  let headers = { ...options.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) }
   let response
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, options)
+    response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers })
   } catch (error) {
     if (error.name === 'AbortError') throw error
     throw new ApiError("Can't reach the analysis service. Check that the API is running.", 0)
   }
+  // A token can expire between the refresh check and the request: refresh once and retry.
+  if (response.status === 401 && token && !retried) return request(path, options, { retried: true })
   if (!response.ok) {
     let detail = null
     try {
@@ -28,11 +41,12 @@ async function request(path, options) {
   return response
 }
 
-export async function getJSON(path, { signal } = {}) {
+async function getJSON(path, { signal } = {}) {
   return (await request(path, { signal })).json()
 }
 
 export const api = {
+  me: () => getJSON('/api/me'),
   recentGames: () => getJSON('/api/recent-games?season_type=Auto&limit=8'),
   conversations: () => getJSON('/api/conversations?limit=20'),
   conversation: (id) => getJSON(`/api/conversations/${encodeURIComponent(id)}`),

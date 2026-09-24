@@ -65,10 +65,10 @@ def create_schema(con: StorageConnection) -> None:
             record_json TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT current_timestamp,
             updated_at TIMESTAMP DEFAULT current_timestamp,
-            conversation_id TEXT, parent_run_id TEXT
+            conversation_id TEXT, parent_run_id TEXT, user_id TEXT
         )
     """)
-    for column in ("conversation_id", "parent_run_id"):
+    for column in ("conversation_id", "parent_run_id", "user_id"):
         con.execute(f"ALTER TABLE harness_runs ADD COLUMN IF NOT EXISTS {column} TEXT")
     con.execute(
         """

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 FRONTEND_ORIGINS = [

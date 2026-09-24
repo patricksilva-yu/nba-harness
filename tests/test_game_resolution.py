@@ -1,85 +1,6 @@
 import pytest
-from api.nba_agent.agent import classify_question, run_agent, season_type_for_ingest
-from api.nba_agent.analysis import winning_team
 import api.nba_agent.tools as tools
 from api.nba_agent.tools import get_box_score, get_game_snapshot, get_lineup_stints, resolve_game_reference
-
-
-def test_classify_question_routes():
-    assert classify_question("advanced stats for Knicks Cavs") == "advanced"
-    assert classify_question("what happened late in OKC Spurs") == "late_game"
-    assert classify_question("who swung the Knicks Cavs game") == "players"
-    assert classify_question("which lineup swung the game") == "lineups"
-    assert classify_question("why did the Knicks win") == "full"
-
-
-def test_run_agent_cached_game_shape():
-    result = run_agent(
-        "advanced stats for Knicks Cavs",
-        game_id="0042500303",
-        max_evidence=2,
-        persist=False,
-    )
-
-    assert result["route"] == "advanced"
-    assert result["persisted"] is False
-    assert result["answer_markdown"].startswith("# NYK 121, CLE 108")
-    assert result["analysis_run_id"] is None
-    assert result["packet_ids"]
-    assert len(result["evidence"]) == 2
-    assert result["evidence"][0]["source"] == "in_memory"
-
-
-def test_run_agent_player_route_uses_compact_player_rows():
-    result = run_agent(
-        "who swung the Knicks Cavs game",
-        game_id="0042500303",
-        max_evidence=2,
-        persist=False,
-    )
-
-    assert result["route"] == "players"
-    assert "## Player Read" in result["answer_markdown"]
-    assert result["packet_ids"]
-
-
-def test_run_agent_full_route_builds_memo():
-    result = run_agent(
-        "why did the Knicks win",
-        game_id="0042500303",
-        max_evidence=3,
-        persist=False,
-    )
-
-    assert result["route"] == "full"
-    assert "## One-Sentence Read" in result["answer_markdown"]
-    assert "## Possession Context" in result["answer_markdown"]
-    assert result["tool_responses"]["possessions"] is not None
-
-
-def test_winning_team_uses_scores_not_first_label_team():
-    snapshot = {
-        "summary": {"label": "OKC 91, SAS 118"},
-        "team_box": [
-            {"team_abbr": "OKC", "pts": 91},
-            {"team_abbr": "SAS", "pts": 118},
-        ],
-    }
-
-    assert winning_team(snapshot) == "SAS"
-
-
-def test_full_route_does_not_call_losing_team_the_winner():
-    result = run_agent(
-        "why did the Spurs beat the Thunder?",
-        game_id="0042500316",
-        max_evidence=1,
-        persist=False,
-    )
-
-    assert "SAS won" in result["answer_markdown"]
-    assert "SAS's official advanced profile" in result["answer_markdown"]
-    assert "OKC won" not in result["answer_markdown"]
 
 
 def test_snapshot_claim_uses_actual_winner():
@@ -102,19 +23,6 @@ def test_lineup_stints_falls_back_to_substitution_events():
     assert lineups["summary"]["lineup_model"] in {"official_game_rotation", "pbp_substitution_inferred_v1"}
     assert lineups["summary"]["stint_count"] > 0
     assert lineups["evidence_packets"][0]["type"] == "lineup_stints"
-
-
-def test_run_agent_lineup_route():
-    result = run_agent(
-        "which lineup or rotation stint swung the Knicks Cavs game",
-        game_id="0042500303",
-        max_evidence=2,
-        persist=False,
-    )
-
-    assert result["route"] == "lineups"
-    assert "## Rotation / Stint Read" in result["answer_markdown"]
-    assert result["tool_responses"]["lineups"] is not None
 
 
 def test_resolution_returns_ambiguous_for_repeated_matchup_without_date(monkeypatch):
@@ -314,18 +222,6 @@ def test_resolution_uses_requested_playoff_game_number(monkeypatch):
     assert resolution["summary"]["preference"] == "playoff_series_game_match"
     assert resolution["summary"]["game_id"] == "0042500207"
     assert resolution["summary"]["series_game_number"] == 7
-
-
-def test_season_type_for_ingest_uses_resolved_season_type():
-    resolution = {"summary": {"game_id": "0042500316", "season_type": "Playoffs"}}
-
-    assert season_type_for_ingest(resolution, "Auto") == "Playoffs"
-    assert season_type_for_ingest(resolution, "Regular Season") == "Playoffs"
-
-
-def test_season_type_for_ingest_falls_back_to_game_id_prefix_for_provided_ids():
-    assert season_type_for_ingest({"summary": {"game_id": "0042500316"}}, "Auto") == "Playoffs"
-    assert season_type_for_ingest({"summary": {"game_id": "0022501196"}}, "Auto") == "Regular Season"
 
 
 def spurs_playoff_run():

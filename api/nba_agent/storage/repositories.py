@@ -33,10 +33,10 @@ class HarnessRunRepository:
         connection = self._storage.open(read_only=False)
         try:
             connection.execute(
-                """INSERT INTO harness_runs (run_id, status, record_json, conversation_id, parent_run_id)
-                VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO harness_runs (run_id, status, record_json, conversation_id, parent_run_id, user_id)
+                VALUES (?, ?, ?, ?, ?, ?)""",
                 [record["run_id"], "running", json.dumps(record, allow_nan=False),
-                 record.get("conversation_id"), record.get("parent_run_id")],
+                 record.get("conversation_id"), record.get("parent_run_id"), record.get("user_id")],
             )
         finally:
             connection.close()
@@ -63,31 +63,33 @@ class HarnessRunRepository:
         finally:
             connection.close()
 
-    def conversation(self, conversation_id: str) -> list[dict]:
-        """Every run in a conversation, oldest first."""
+    def conversation(self, conversation_id: str, user_id: str | None = None) -> list[dict]:
+        """Every run in a conversation, oldest first; with `user_id`, only that user's runs."""
+        owner = "AND user_id = ?" if user_id else ""
         connection = self._storage.open()
         try:
             rows = connection.execute(
-                """SELECT record_json FROM harness_runs WHERE conversation_id = ?
+                f"""SELECT record_json FROM harness_runs WHERE conversation_id = ? {owner}
                 ORDER BY created_at, run_id""",
-                [conversation_id],
+                [conversation_id, *([user_id] if user_id else [])],
             ).fetchall()
             return [decode_json(row[0]) for row in rows]
         finally:
             connection.close()
 
-    def recent_conversations(self, limit: int = 20) -> list[dict]:
-        """Newest conversations first, each described by its opening run."""
+    def recent_conversations(self, limit: int = 20, user_id: str | None = None) -> list[dict]:
+        """Newest conversations first, each described by its opening run; with `user_id`, only theirs."""
+        owner = "AND user_id = ?" if user_id else ""
         connection = self._storage.open()
         try:
             rows = connection.execute(
-                """SELECT first.conversation_id, first.record_json, latest.runs, latest.updated_at
+                f"""SELECT first.conversation_id, first.record_json, latest.runs, latest.updated_at
                 FROM (SELECT conversation_id, COUNT(*) AS runs, MAX(updated_at) AS updated_at
-                      FROM harness_runs WHERE conversation_id IS NOT NULL GROUP BY conversation_id) AS latest
+                      FROM harness_runs WHERE conversation_id IS NOT NULL {owner} GROUP BY conversation_id) AS latest
                 JOIN harness_runs AS first
                   ON first.conversation_id = latest.conversation_id AND first.parent_run_id IS NULL
                 ORDER BY latest.updated_at DESC LIMIT ?""",
-                [limit],
+                [*([user_id] if user_id else []), limit],
             ).fetchall()
         finally:
             connection.close()
@@ -186,28 +188,6 @@ class EvidenceRepository:
             )
         finally:
             connection.close()
-
-
-class AnalysisRunRepository:
-    def __init__(self, storage: StorageBackend) -> None:
-        self._storage = storage
-
-    def create(self, game_id: str, user_question: str, memo_markdown: str, packet_ids: list[str]) -> str:
-        run_id = f"analysis_{game_id}_{uuid.uuid4().hex}"
-        connection = self._storage.open(read_only=False)
-        try:
-            connection.execute(
-                """
-                INSERT INTO analysis_runs (
-                    run_id, game_id, user_question, memo_markdown, packet_ids_json
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [run_id, game_id, user_question, memo_markdown, json.dumps(packet_ids)],
-            )
-        finally:
-            connection.close()
-        return run_id
 
 
 class IngestionJobRepository:

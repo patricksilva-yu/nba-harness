@@ -56,6 +56,7 @@ class FollowUpError(ValueError):
 
 
 CONVERSATION_TURNS = 5
+STAKES_TYPES = {"series_context", "team_form"}
 
 
 def follow_up_context(repository, parent_run_id: str) -> dict:
@@ -74,7 +75,7 @@ def follow_up_context(repository, parent_run_id: str) -> dict:
     turn = {"run_id": parent["run_id"], "question": parent["question"], "stop_reason": parent["stop_reason"],
             "headline": analysis.get("headline"), "claims": [c["text"] for c in analysis.get("claims", [])]}
     return {
-        "parent_run_id": parent["run_id"],
+        "parent_run_id": parent["run_id"], "user_id": parent.get("user_id"),
         "conversation_id": parent.get("conversation_id") or parent["run_id"],
         "conversation": [*parent.get("conversation", []), turn][-CONVERSATION_TURNS:],
         "game_id": parent.get("game_id"), "resolution": parent.get("resolution") or {}, "cache": parent.get("cache"),
@@ -122,7 +123,7 @@ def public_run(record: dict) -> dict:
 
 class Harness:
     def __init__(self, question, game_id, season, season_type, configuration, limits, model, repository,
-                 follow_up=None, on_event=None, openai_trace_id=None):
+                 follow_up=None, on_event=None, openai_trace_id=None, user_id=None):
         self.model, self.repository, self.limits = model, repository, limits
         self.on_event = on_event
         self.started = time.monotonic()
@@ -140,7 +141,7 @@ class Harness:
         self.history = [{"role": "user", "content": encode(clean(opening))}]
         self.record = {
             "run_id": "harness_" + uuid.uuid4().hex, "status": "running", "stop_reason": None,
-            "openai_trace_id": openai_trace_id,
+            "openai_trace_id": openai_trace_id, "user_id": user_id,
             "version": VERSION, "prompt_version": VERSION, "allowlist_version": VERSION,
             "mcp_server": "nba-analyst/stdio", "model": model.name, "configuration": configuration,
             "packages": {name: version(name) for name in ("openai", "fastmcp", "mcp")},
@@ -162,6 +163,7 @@ class Harness:
         self.investigating = False
         self.gathering_allowed = True
         self.investigation_evidence = 0
+        self.stakes_attached = False
         self.reviewed = []  # (draft, review) pairs, in order
         self.trace_enabled = openai_trace_id is not None
         self.repository.create(self.record)
@@ -350,10 +352,12 @@ class Harness:
         if name == "resolve_game":
             game = summary.get("game_id")
             if not game:
-                self.record["resolution"] = summary
+                # Not a data failure: the question named no single game. Keep the candidates
+                # (or how the series actually went) so the user can pick instead of rephrasing.
+                self.record["resolution"] = {**summary, "candidates": result.get("candidates", [])[:5]}
                 self.event("mcp_call_completed", name=name, arguments=arguments, result=result, progress=False)
                 self.event("game_unresolved", result=result)
-                raise StopRun("insufficient_evidence")
+                raise StopRun("game_unresolved")
             if not isinstance(game, str) or (self.requested_game and game != self.requested_game):
                 raise ToolFailure("wrong_game_result")
             self.record["game_id"], self.record["resolution"] = game, summary
@@ -398,6 +402,26 @@ class Harness:
             self.record["evidence"][arguments["packet_id"]]["detail"] = result
         return progress
 
+    async def attach_stakes(self, boundary):
+        """Give every answer what the game meant (series state or team form) without waiting to be asked.
+
+        One cheap results query, fetched by the harness once the game data is cached. It enters the
+        ledger like any other packet, so the model can cite it and the verifier checks it.
+        """
+        # Follow-ups inherit the parent's ledger, which already carries its stakes packet.
+        if self.stakes_attached or self.record["parent_run_id"] or not self.record["game_id"] or self.record["cache"] is None:
+            return
+        self.stakes_attached = True
+        if any(entry["packet"].get("type") in STAKES_TYPES for entry in self.record["evidence"].values()):
+            return
+        call = {"name": "get_game_analysis_context", "call_id": None,
+                "arguments": json.dumps({"game_id": self.record["game_id"], "sections": ["stakes"]})}
+        result = await self.tool(boundary, call)
+        if result.get("evidence_packets"):
+            self.history.append({"role": "user", "content": encode({"harness_context": {
+                "note": "Stakes evidence added by the harness: what this game meant for the series or season.",
+                "evidence_packets": result["evidence_packets"]}})})
+
     async def verify(self, draft):
         self.record["usage"]["verification_passes"] += 1
         claims = draft.reviewable()
@@ -426,6 +450,7 @@ class Harness:
         self.event("mcp_discovered", tools=tools,
                    schema_hash=hashlib.sha256(encode(tools).encode()).hexdigest())
         while True:
+            await self.attach_stakes(boundary)
             response = await self.model_turn(tools if self.gathering_allowed else [])
             calls = [item for item in response["items"] if item.get("type") == "function_call"]
             self.history.extend(response["items"])
@@ -541,8 +566,7 @@ class Harness:
         markdown = f"# {headline.text if headline else 'NBA postgame analysis'}\n\n" + "\n\n".join(c.text for c in claims)
         if self.answer.limitations:
             markdown += "\n\n## Limitations\n" + "\n".join("- " + x for x in self.answer.limitations)
-        result = {"question": self.record["question"], "mode": "mcp_harness", "route": "mcp_harness",
-            "openai_trace_id": self.record["openai_trace_id"],
+        result = {"question": self.record["question"], "openai_trace_id": self.record["openai_trace_id"],
             "configuration": self.configuration, "resolution": self.record["resolution"], "cache": self.record["cache"],
             "game_id": self.record["game_id"], "conversation_id": self.record["conversation_id"],
             "parent_run_id": self.record["parent_run_id"],
@@ -560,11 +584,12 @@ class Harness:
 async def run_harness(question: str, game_id: str | None = None, season: str | None = None,
                       season_type: str = "Auto", configuration: Configuration = "investigation",
                       db_path: Path = DEFAULT_DB, *, limits: Limits | None = None, model=None,
-                      mcp_client=None, repository=None, follow_up: dict | None = None, on_event=None) -> dict:
+                      mcp_client=None, repository=None, follow_up: dict | None = None, on_event=None,
+                      user_id: str | None = None) -> dict:
     """Every accepted run is persisted, including bounded failures and cancellation.
 
     `follow_up` comes from `follow_up_context`; `on_event` receives each durable
-    event's public view as it happens.
+    event's public view as it happens. `user_id` is the signed-in owner, or None.
     """
     if configuration not in {"basic", "verification", "investigation"}:
         raise ValueError("Unknown harness configuration")
@@ -579,7 +604,7 @@ async def run_harness(question: str, game_id: str | None = None, season: str | N
     openai_trace_id = gen_trace_id() if trace_enabled else None
     try:
         harness = Harness(question, game_id, season, season_type, configuration, limits, model, repository,
-                          follow_up=follow_up, on_event=on_event, openai_trace_id=openai_trace_id)
+                          follow_up=follow_up, on_event=on_event, openai_trace_id=openai_trace_id, user_id=user_id)
         with (trace("NBA MCP Harness", trace_id=openai_trace_id,
                     group_id=harness.record["conversation_id"],
                     metadata={"run_id": harness.record["run_id"],

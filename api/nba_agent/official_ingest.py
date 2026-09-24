@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import uuid
 from datetime import date
 from pathlib import Path
@@ -92,46 +93,6 @@ def elapsed_to_period_clock(elapsed_seconds: float | None) -> tuple[int | None, 
     return period, f"{remaining // 60}:{remaining % 60:02d}"
 
 
-def fetch_official_player_box(game_id: str, timeout: int = 20) -> list[dict[str, Any]]:
-    response = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, timeout=timeout)
-    player_frame = response.get_data_frames()[0]
-    rows: list[dict[str, Any]] = []
-    for record in player_frame.to_dict(orient="records"):
-        comment = record.get("comment")
-        played = not comment
-        rows.append(
-            {
-                "game_id": str(record.get("gameId")),
-                "player_id": str(record.get("personId")),
-                "player_name": f"{record.get('firstName', '')} {record.get('familyName', '')}".strip(),
-                "team_abbr": record.get("teamTricode"),
-                "matchup": None,
-                "minutes": minutes_to_float(record.get("minutes")) if played else 0.0,
-                "fgm": record.get("fieldGoalsMade") if played else 0,
-                "fga": record.get("fieldGoalsAttempted") if played else 0,
-                "fg_pct": record.get("fieldGoalsPercentage") if played else 0,
-                "fg3m": record.get("threePointersMade") if played else 0,
-                "fg3a": record.get("threePointersAttempted") if played else 0,
-                "fg3_pct": record.get("threePointersPercentage") if played else 0,
-                "ftm": record.get("freeThrowsMade") if played else 0,
-                "fta": record.get("freeThrowsAttempted") if played else 0,
-                "ft_pct": record.get("freeThrowsPercentage") if played else 0,
-                "oreb": record.get("reboundsOffensive") if played else 0,
-                "dreb": record.get("reboundsDefensive") if played else 0,
-                "reb": record.get("reboundsTotal") if played else 0,
-                "ast": record.get("assists") if played else 0,
-                "stl": record.get("steals") if played else 0,
-                "blk": record.get("blocks") if played else 0,
-                "tov": record.get("turnovers") if played else 0,
-                "pf": record.get("foulsPersonal") if played else 0,
-                "pts": record.get("points") if played else 0,
-                "plus_minus": record.get("plusMinusPoints") if played else None,
-                "source": "nba_api:BoxScoreTraditionalV3",
-            }
-        )
-    return rows
-
-
 def fetch_recent_completed_games(
     season: str | None = None,
     season_type: str = "Playoffs",
@@ -139,23 +100,33 @@ def fetch_recent_completed_games(
     timeout: int = 20,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
+    """Newest completed games; with ``db_path``, also records every game's result."""
     season = season or current_nba_season()
     response = leaguegamelog.LeagueGameLog(
         season=season,
         season_type_all_star=season_type,
         timeout=timeout,
     )
+    games = league_log_games(response, season, season_type)
     if db_path is not None:
         con = get_storage(db_path).open(read_only=False)
-        create_schema(con)
-        persist_raw_response(
-            con,
-            endpoint="LeagueGameLog",
-            game_id=None,
-            request={"season": season, "season_type": season_type, "limit": limit, "timeout": timeout},
-            response=response,
-        )
-        con.close()
+        try:
+            create_schema(con)
+            persist_raw_response(
+                con,
+                endpoint="LeagueGameLog",
+                game_id=None,
+                request={"season": season, "season_type": season_type, "limit": limit, "timeout": timeout},
+                response=response,
+            )
+            upsert_game_results(con, games)
+        finally:
+            con.close()
+    return games[:limit]
+
+
+def league_log_games(response: Any, season: str, season_type: str) -> list[dict[str, Any]]:
+    """One row per completed game from a LeagueGameLog response, newest first."""
     frame = response.get_data_frames()[0]
     games: list[dict[str, Any]] = []
     for game_id, game_frame in frame.groupby("GAME_ID", sort=False):
@@ -164,6 +135,10 @@ def fetch_recent_completed_games(
         rows = game_frame.to_dict(orient="records")
         home = next((row for row in rows if "vs." in row["MATCHUP"]), None)
         away = next((row for row in rows if "@" in row["MATCHUP"]), None)
+        if home is None and away is not None:
+            # Neutral-site games (NBA Cup knockouts, international games) list both teams as "@";
+            # the first row's matchup names the designated home team.
+            home = next(row for row in rows if row is not away)
         if not home or not away:
             continue
         games.append(
@@ -171,10 +146,13 @@ def fetch_recent_completed_games(
                 "game_id": str(game_id),
                 "game_date": str(home["GAME_DATE"]),
                 "season": season,
+                "season_id": str(home["SEASON_ID"]),
                 "season_type": season_type,
+                "home_team_id": str(home["TEAM_ID"]),
                 "home_team_abbr": home["TEAM_ABBREVIATION"],
                 "home_team_name": home["TEAM_NAME"],
                 "home_score": int(home["PTS"]),
+                "away_team_id": str(away["TEAM_ID"]),
                 "away_team_abbr": away["TEAM_ABBREVIATION"],
                 "away_team_name": away["TEAM_NAME"],
                 "away_score": int(away["PTS"]),
@@ -184,8 +162,65 @@ def fetch_recent_completed_games(
                 ),
             }
         )
-    games = sorted(games, key=lambda item: (item["game_date"], item["game_id"]), reverse=True)
-    return games[:limit]
+    return sorted(games, key=lambda item: (item["game_date"], item["game_id"]), reverse=True)
+
+
+def upsert_game_results(con, games: list[dict[str, Any]]) -> int:
+    """Record every completed game's result so series and form context is complete.
+
+    The league log already lists the whole season, so this keeps a results-only
+    row per game. Rows written by a full game import are left untouched; detail
+    tables (box scores, play-by-play) are still fetched per game on demand.
+    Only games not yet stored are written, so a routine refresh inserts just the
+    newest results instead of re-sending the whole season.
+    """
+    if not games:
+        return 0
+    placeholders = ", ".join("?" for _ in games)
+    stored = {str(row[0]) for row in con.execute(
+        f"SELECT game_id FROM games WHERE game_id IN ({placeholders})", [game["game_id"] for game in games]
+    ).fetchall()}
+    games = [game for game in games if game["game_id"] not in stored]
+    if not games:
+        return 0
+    con.executemany(
+        """
+        INSERT INTO games (
+            game_id, season_id, game_date, season_type,
+            home_team_id, home_team_abbr, home_team_name,
+            away_team_id, away_team_abbr, away_team_name,
+            home_score, away_score, source
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (game_id) DO NOTHING
+        """,
+        [
+            [
+                game["game_id"], game["season_id"], game["game_date"], game["season_type"],
+                game["home_team_id"], game["home_team_abbr"], game["home_team_name"],
+                game["away_team_id"], game["away_team_abbr"], game["away_team_name"],
+                game["home_score"], game["away_score"], "nba_api:LeagueGameLog:results",
+            ]
+            for game in games
+        ],
+    )
+    return len(games)
+
+
+GAME_ID_SEASON_TYPES = {"002": "Regular Season", "004": "Playoffs", "005": "PlayIn"}
+
+
+def season_for_game(game_id: str, season: str | None, season_type: str) -> tuple[str, str]:
+    """Season and season type encoded in an NBA game id (``TTT YY NNNNN``), else the ones given.
+
+    The id is authoritative: a default season type or the current season must
+    not send a past or regular-season game to the wrong league log.
+    """
+    match = re.fullmatch(r"(\d{3})(\d{2})\d{5}", str(game_id))
+    if not match or match.group(1) not in GAME_ID_SEASON_TYPES:
+        return season or current_nba_season(), season_type
+    start_year = 2000 + int(match.group(2))
+    return f"{start_year}-{str(start_year + 1)[-2:]}", GAME_ID_SEASON_TYPES[match.group(1)]
 
 
 def _fetch_league_log_game(
@@ -207,19 +242,12 @@ def _fetch_league_log_game(
     rows = game_frame.to_dict(orient="records")
     home = next((row for row in rows if "vs." in row["MATCHUP"]), None)
     away = next((row for row in rows if "@" in row["MATCHUP"]), None)
+    if home is None and away is not None:
+        # Neutral-site game: both rows read "@"; see league_log_games.
+        home = next(row for row in rows if row is not away)
     if not home or not away:
         raise ValueError(f"Could not determine home/away rows for {game_id}")
     return home, away, response, season
-
-
-def fetch_official_team_box(game_id: str, timeout: int = 20) -> list[dict[str, Any]]:
-    team_frame = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, timeout=timeout).get_data_frames()[2]
-    return team_frame.to_dict(orient="records")
-
-
-def fetch_official_advanced_team_box(game_id: str, timeout: int = 20) -> list[dict[str, Any]]:
-    team_frame = boxscoreadvancedv3.BoxScoreAdvancedV3(game_id=game_id, timeout=timeout).get_data_frames()[1]
-    return team_frame.to_dict(orient="records")
 
 
 def import_official_advanced_team_box(
@@ -231,17 +259,6 @@ def import_official_advanced_team_box(
     rows = response.get_data_frames()[1].to_dict(orient="records")
     con = get_storage(db_path).open(read_only=False)
     create_schema(con)
-    team_abbr_by_id = {
-        str(row[0]): row[1]
-        for row in con.execute(
-            """
-            SELECT home_team_id, home_team_abbr FROM games WHERE game_id = ?
-            UNION ALL
-            SELECT away_team_id, away_team_abbr FROM games WHERE game_id = ?
-            """,
-            [game_id, game_id],
-        ).fetchall()
-    }
     raw_response_id = persist_raw_response(
         con,
         endpoint="BoxScoreAdvancedV3",
@@ -309,6 +326,7 @@ def import_official_game_and_team_box(
     season_type: str = "Playoffs",
     timeout: int = 20,
 ) -> dict[str, Any]:
+    season, season_type = season_for_game(game_id, season, season_type)
     home, away, league_response, resolved_season = _fetch_league_log_game(game_id, season, season_type, timeout)
     team_response = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id, timeout=timeout)
     team_rows = team_response.get_data_frames()[2].to_dict(orient="records")
