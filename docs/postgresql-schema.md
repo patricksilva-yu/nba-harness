@@ -34,13 +34,15 @@ application table so Supabase's browser-facing roles cannot reach them through
 the Data API; the application connects as the table owner and is unaffected.
 New tables must enable RLS in their own migration. See [authentication](auth.md).
 
+Revision `20260924_02` drops `analysis_runs`, which only the removed
+deterministic agent wrote; harness runs are recorded in `harness_runs`.
+Downgrading restores an empty table.
+
 ## Relationships and deletion policy
 
 `games` is the parent of normalized game data. Its box scores, play-by-play,
 lineup stints, and evidence packets use `ON DELETE CASCADE`; they have no
-meaning without their game. `analysis_runs` uses `ON DELETE SET NULL` so that
-historical analysis remains auditable if a game record is deliberately
-removed. `raw_responses` has no foreign key because an upstream response may
+meaning without their game. `raw_responses` has no foreign key because an upstream response may
 be captured before a game exists locally (for example, a league-wide log).
 
 `games` holds two kinds of rows. Results-only rows (`source =

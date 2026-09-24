@@ -24,5 +24,4 @@ def test_create_schema_creates_live_tables(tmp_path):
         "play_by_play_events",
         "lineup_stints",
         "evidence_packets",
-        "analysis_runs",
     }.issubset(table_names)

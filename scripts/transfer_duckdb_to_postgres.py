@@ -9,9 +9,9 @@ import psycopg2
 from psycopg2.extras import Json, execute_values
 from dotenv import load_dotenv
 
-TABLES = ["raw_responses", "games", "box_scores_team", "box_scores_player", "box_scores_advanced_team", "play_by_play_events", "lineup_stints", "evidence_packets", "analysis_runs", "ingestion_jobs", "seed_player_game_logs"]
-PKS = {"raw_responses":["response_id"], "games":["game_id"], "box_scores_team":["game_id","team_side"], "box_scores_player":["game_id","player_id"], "box_scores_advanced_team":["game_id","team_id"], "play_by_play_events":["game_id","eventnum"], "lineup_stints":["stint_id"], "evidence_packets":["packet_id"], "analysis_runs":["run_id"], "ingestion_jobs":["job_id"]}
-JSON_COLUMNS = {"raw_responses":{"request_json","response_json"}, "evidence_packets":{"payload_json"}, "analysis_runs":{"packet_ids_json"}, "ingestion_jobs":{"result_json"}}
+TABLES = ["raw_responses", "games", "box_scores_team", "box_scores_player", "box_scores_advanced_team", "play_by_play_events", "lineup_stints", "evidence_packets", "ingestion_jobs", "seed_player_game_logs"]
+PKS = {"raw_responses":["response_id"], "games":["game_id"], "box_scores_team":["game_id","team_side"], "box_scores_player":["game_id","player_id"], "box_scores_advanced_team":["game_id","team_id"], "play_by_play_events":["game_id","eventnum"], "lineup_stints":["stint_id"], "evidence_packets":["packet_id"], "ingestion_jobs":["job_id"]}
+JSON_COLUMNS = {"raw_responses":{"request_json","response_json"}, "evidence_packets":{"payload_json"}, "ingestion_jobs":{"result_json"}}
 ROOT = Path(__file__).resolve().parents[1]
 
 def normalize(value):

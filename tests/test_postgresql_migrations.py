@@ -56,7 +56,6 @@ def test_initial_migration_creates_canonical_schema_and_downgrades_cleanly():
             inspector = inspect(connection)
             assert set(inspector.get_table_names()) == {
                 "alembic_version",
-                "analysis_runs",
                 "harness_runs",
                 "box_scores_advanced_team",
                 "box_scores_player",
@@ -69,7 +68,7 @@ def test_initial_migration_creates_canonical_schema_and_downgrades_cleanly():
                 "raw_responses",
                 "seed_player_game_logs",
             }
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260924_01"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260924_02"
             harness_columns = {column["name"] for column in inspector.get_columns("harness_runs")}
             assert {"conversation_id", "parent_run_id", "user_id"}.issubset(harness_columns)
             assert any(fk["referred_table"] == "harness_runs" and fk["constrained_columns"] == ["parent_run_id"]

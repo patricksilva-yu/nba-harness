@@ -269,14 +269,7 @@ def create_schema(con: StorageConnection) -> None:
     )
     con.execute(
         """
-        CREATE TABLE IF NOT EXISTS analysis_runs (
-            run_id TEXT PRIMARY KEY,
-            game_id TEXT,
-            user_question TEXT,
-            memo_markdown TEXT,
-            packet_ids_json TEXT,
-            created_at TIMESTAMP DEFAULT current_timestamp
-        )
+        DROP TABLE IF EXISTS analysis_runs
         """
     )
     con.execute(

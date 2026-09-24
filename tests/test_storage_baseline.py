@@ -26,7 +26,6 @@ EXPECTED_PRIMARY_KEYS = {
     "play_by_play_events": ["game_id", "eventnum"],
     "lineup_stints": ["stint_id"],
     "evidence_packets": ["packet_id"],
-    "analysis_runs": ["run_id"],
     "ingestion_jobs": ["job_id"],
 }
 
