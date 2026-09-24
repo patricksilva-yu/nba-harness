@@ -89,6 +89,13 @@ The primary MCP harness uses five task-level tools:
 The MCP server exposes exactly these tools; the harness also checks them
 against a versioned allowlist.
 
+## Post-Game Pipeline
+
+After a followed team's game, a scheduled job loads its stats once they are
+complete and produces one shared, fact-checked breakdown that fans open from
+their home page. It runs from a home connection because `stats.nba.com` blocks
+cloud providers. See [the post-game pipeline](docs/pipeline.md).
+
 ## Ingestion Jobs
 
 Cache misses can be run outside an analysis request through `POST /api/ingestion-jobs`. Poll `GET /api/ingestion-jobs/{job_id}` for `queued`, `fetching`, `ready`, `partial`, or `failed`.

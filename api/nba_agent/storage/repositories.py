@@ -78,7 +78,11 @@ class HarnessRunRepository:
             connection.close()
 
     def recent_conversations(self, limit: int = 20, user_id: str | None = None) -> list[dict]:
-        """Newest conversations first, each described by its opening run; with `user_id`, only theirs."""
+        """Newest conversations first, each described by its opening run; with `user_id`, only theirs.
+
+        A conversation's id is its opening run's id. That run may itself follow up
+        a shared breakdown, so it is found by id rather than by having no parent.
+        """
         owner = "AND user_id = ?" if user_id else ""
         connection = self._storage.open()
         try:
@@ -87,7 +91,7 @@ class HarnessRunRepository:
                 FROM (SELECT conversation_id, COUNT(*) AS runs, MAX(updated_at) AS updated_at
                       FROM harness_runs WHERE conversation_id IS NOT NULL {owner} GROUP BY conversation_id) AS latest
                 JOIN harness_runs AS first
-                  ON first.conversation_id = latest.conversation_id AND first.parent_run_id IS NULL
+                  ON first.run_id = latest.conversation_id AND first.conversation_id = latest.conversation_id
                 ORDER BY latest.updated_at DESC LIMIT ?""",
                 [*([user_id] if user_id else []), limit],
             ).fetchall()

@@ -1,5 +1,6 @@
 """Supabase access tokens, verified against a local ES256 key in place of the project's JWKS."""
 
+import asyncio
 import time
 import uuid
 
@@ -9,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from fastmcp import Client
 
-from api import auth
+from api import auth, routes
 from api.app import app
 from api.nba_agent.db import get_storage
 from api.nba_agent.harness import run_harness
@@ -172,3 +173,43 @@ def test_follow_ups_continue_only_as_the_same_user(client):
 def test_asking_needs_sign_in(client):
     assert ask(client)[0] == 401
     assert client.post("/api/ask", json={"question": "Who won?", "game_id": "g1"}).status_code == 401
+
+
+def publish_breakdown(game_id="g1"):
+    """What the post-game pipeline leaves behind: an ownerless run recorded as the game's breakdown."""
+    storage = routes.get_storage()
+    result = asyncio.run(run_harness("What decided this game?", game_id=game_id, db_path=storage.path,
+                                     mcp_client=Client(server()), model=ScriptedModel([*preparation(), answer(), review()])))
+    connection = storage.open(read_only=False)
+    connection.execute("INSERT INTO game_pipeline (game_id, status, breakdown_run_id) VALUES (?, 'analyzed', ?)",
+                       [game_id, result["analysis_run_id"]])
+    connection.close()
+    return result["analysis_run_id"]
+
+
+def test_breakdown_is_shared_and_follow_ups_start_private_conversations(client):
+    assert client.get("/api/games/g1/breakdown", headers=bearer(ALICE)).status_code == 404
+    breakdown_id = publish_breakdown()
+    assert client.get("/api/games/g1/breakdown").status_code == 401
+    breakdown = client.get("/api/games/g1/breakdown", headers=bearer(ALICE)).json()
+    assert breakdown["analysis_run_id"] == breakdown_id and breakdown["stop_reason"] == "supported"
+    assert "trace" not in breakdown
+
+    status, bobs = ask(client, bearer(BOB), question="Who scored most?", parent_run_id=breakdown_id)
+    assert status == 200 and bobs["parent_run_id"] == breakdown_id
+    assert bobs["conversation_id"] == bobs["analysis_run_id"] != breakdown_id
+
+    listed = client.get("/api/conversations", headers=bearer(BOB)).json()["conversations"]
+    assert [(c["conversation_id"], c["question"]) for c in listed] == [(bobs["conversation_id"], "Who scored most?")]
+    opened = client.get(f"/api/conversations/{bobs['conversation_id']}", headers=bearer(BOB)).json()["runs"]
+    assert [run["analysis_run_id"] for run in opened] == [breakdown_id, bobs["analysis_run_id"]]
+
+    assert client.get("/api/conversations", headers=bearer(ALICE)).json()["conversations"] == []
+    assert client.get(f"/api/conversations/{bobs['conversation_id']}", headers=bearer(ALICE)).status_code == 404
+
+
+def test_only_recorded_breakdowns_are_open_to_everyone(client):
+    ownerless = asyncio.run(run_harness("Who won?", game_id="g1", db_path=routes.get_storage().path,
+                                        mcp_client=Client(server()), model=ScriptedModel([*preparation(), answer(), review()])))
+    follow = {"question": "Who scored most?", "parent_run_id": ownerless["analysis_run_id"]}
+    assert client.post("/api/ask/stream", json=follow, headers=bearer(BOB)).status_code == 404

@@ -56,6 +56,7 @@ export const api = {
   recentGames: () => getJSON('/api/recent-games?season_type=Auto&limit=8'),
   conversations: () => getJSON('/api/conversations?limit=20'),
   conversation: (id) => getJSON(`/api/conversations/${encodeURIComponent(id)}`),
+  breakdown: (gameId) => getJSON(`/api/games/${encodeURIComponent(gameId)}/breakdown`),
   gameFlow: (gameId, options) => getJSON(`/api/games/${encodeURIComponent(gameId)}/flow`, options),
   traces: (filters, options) => {
     let query = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== '' && v != null))

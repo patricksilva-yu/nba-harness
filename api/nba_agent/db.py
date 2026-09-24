@@ -77,6 +77,16 @@ def create_schema(con: StorageConnection) -> None:
             PRIMARY KEY (user_id, team_abbr)
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS game_pipeline (
+            game_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+            last_error TEXT, breakdown_run_id TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+            loaded_at TIMESTAMPTZ, analyzed_at TIMESTAMPTZ
+        )
+    """)
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS raw_responses (
