@@ -42,9 +42,7 @@ class FavoriteTeamRequest(BaseModel):
 
 
 def favorites_repository() -> FavoriteTeamsRepository:
-    storage = get_storage()
-    storage.initialize()
-    return FavoriteTeamsRepository(storage)
+    return FavoriteTeamsRepository(get_storage())
 
 
 def favorite_owner(viewer: Viewer) -> str:

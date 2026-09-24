@@ -45,6 +45,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr("api.routes.run_harness", configured)
     monkeypatch.setattr("api.routes.ResponsesModel", lambda: ScriptedModel([*preparation(), answer(), review()]))
     monkeypatch.setattr("api.routes.get_storage", lambda: get_storage(path))
+    get_storage(path).initialize()
     return TestClient(app)
 
 

@@ -1,170 +1,225 @@
-import * as Headless from '@headlessui/react'
-import { ArrowRightIcon, PlusIcon, StarIcon, XMarkIcon } from '@heroicons/react/20/solid'
+import { ChevronRightIcon, StarIcon } from '@heroicons/react/20/solid'
+import { StarIcon as StarOutlineIcon } from '@heroicons/react/24/outline'
+import clsx from 'clsx'
 import { useCallback, useEffect, useState } from 'react'
+import { Badge } from '../components/badge'
+import { Button } from '../components/button'
+import { Heading, Subheading } from '../components/heading'
+import { Text } from '../components/text'
 import { api } from './api'
-import { useAuth } from './auth'
-import { NBA_TEAMS } from './favorites-data'
+import { CONFERENCES, fullName } from './favorites-data'
 import { formatGameDate } from './GameHeader'
 import { team } from './teams'
 
-const nameByAbbr = Object.fromEntries(NBA_TEAMS.map(({ abbr, name }) => [abbr, name]))
-
-function TeamBadge({ abbr, large = false }) {
+function TeamMark({ abbr, className = 'size-10 text-[15px]' }) {
   return (
     <span
-      className={`grid shrink-0 place-items-center rounded-xl font-score font-bold tracking-wide text-white ${large ? 'size-14 text-2xl' : 'size-9 text-base'}`}
+      className={clsx(className, 'grid shrink-0 place-items-center rounded-lg font-score font-bold tracking-wide text-white ring-1 ring-white/15 ring-inset')}
       style={{ background: team(abbr).color }}
+      aria-hidden="true"
     >
       {abbr}
     </span>
   )
 }
 
-export function Home({ onSelectGame }) {
-  let { user } = useAuth()
-  let [favorites, setFavorites] = useState({ status: 'loading', teams: [] })
-  let [games, setGames] = useState({ status: 'loading', items: [] })
-  let [open, setOpen] = useState(false)
-  let [query, setQuery] = useState('')
-  let [working, setWorking] = useState(null)
-  let [error, setError] = useState('')
-
-  let refresh = useCallback(async () => {
-    try {
-      let [favoriteData, gameData] = await Promise.all([api.favoriteTeams(), api.favoriteGames()])
-      setFavorites({ status: 'ok', teams: favoriteData.teams })
-      setGames({ status: 'ok', items: gameData.games })
-    } catch (reason) {
-      setFavorites((current) => ({ ...current, status: 'error' }))
-      setGames((current) => ({ ...current, status: 'error' }))
-      setError(reason.message)
-    }
-  }, [])
-
-  useEffect(() => { refresh() }, [refresh, user?.id])
-
-  async function add(abbr) {
-    setWorking(abbr)
-    setError('')
-    try {
-      await api.addFavoriteTeam(abbr)
-      await refresh()
-      setOpen(false)
-      setQuery('')
-    } catch (reason) {
-      setError(reason.message)
-    } finally {
-      setWorking(null)
-    }
+// A final from the followed team's side: result, score, opponent.
+function perspective(game, abbr) {
+  let home = game.home_team_abbr === abbr
+  let [ours, theirs] = home ? [game.home_score, game.away_score] : [game.away_score, game.home_score]
+  return {
+    won: ours > theirs,
+    score: `${ours}–${theirs}`,
+    opponent: home ? game.away_team_abbr : game.home_team_abbr,
+    venue: home ? 'vs' : '@',
   }
+}
 
-  async function remove(abbr) {
-    setWorking(abbr)
-    setError('')
-    try {
-      await api.removeFavoriteTeam(abbr)
-      await refresh()
-    } catch (reason) {
-      setError(reason.message)
-    } finally {
-      setWorking(null)
-    }
-  }
+function Result({ won }) {
+  return <Badge color={won ? 'green' : 'red'}>{won ? 'W' : 'L'}</Badge>
+}
 
-  let available = NBA_TEAMS.filter(({ abbr, name }) =>
-    !favorites.teams.includes(abbr) && `${name} ${abbr}`.toLowerCase().includes(query.trim().toLowerCase())
+function TeamCard({ abbr, games, onSelectGame }) {
+  let [latest, ...earlier] = games
+  return (
+    <section aria-label={fullName(abbr)} className="rounded-xl bg-white ring-1 ring-zinc-950/10 dark:bg-zinc-900 dark:ring-white/10">
+      <div className="flex items-center gap-3 px-4 pt-4">
+        <TeamMark abbr={abbr} />
+        <Subheading>{fullName(abbr)}</Subheading>
+      </div>
+
+      {latest ? (
+        <LatestGame abbr={abbr} game={latest} onSelect={() => onSelectGame(latest)} />
+      ) : (
+        <Text className="px-4 pt-3 pb-4">No finals in the database yet.</Text>
+      )}
+
+      {earlier.length > 0 && (
+        <ul className="border-t border-zinc-950/5 px-2 py-1.5 dark:border-white/5">
+          {earlier.map((game) => {
+            let view = perspective(game, abbr)
+            return (
+              <li key={game.game_id}>
+                <button
+                  type="button"
+                  onClick={() => onSelectGame(game)}
+                  className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left text-sm/6 hover:bg-zinc-950/[2.5%] dark:hover:bg-white/5"
+                >
+                  <Result won={view.won} />
+                  <span className="font-medium text-zinc-950 tabular-nums dark:text-white">{view.score}</span>
+                  <span className="text-zinc-500 dark:text-zinc-400">
+                    {view.venue} {view.opponent}
+                  </span>
+                  <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">{formatGameDate(game.game_date)}</span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
+}
+
+function LatestGame({ abbr, game, onSelect }) {
+  let view = perspective(game, abbr)
+  return (
+    <button type="button" onClick={onSelect} className="group block w-full px-4 pt-3 pb-4 text-left">
+      <div className="text-xs/5 text-zinc-500 dark:text-zinc-400">
+        Final{game.season_type === 'Playoffs' ? ' · Playoffs' : ''} · {formatGameDate(game.game_date)}
+      </div>
+      <div className="mt-1 flex items-center gap-3">
+        <Result won={view.won} />
+        <span className="font-score text-3xl/none font-bold text-zinc-950 tabular-nums dark:text-white">{view.score}</span>
+        <span className="text-sm text-zinc-500 dark:text-zinc-400">
+          {view.venue} {team(view.opponent).name}
+        </span>
+      </div>
+      <div className="mt-3 flex items-center gap-1 text-sm/6 font-medium text-zinc-950 dark:text-white">
+        Read the breakdown
+        <ChevronRightIcon className="size-4 text-zinc-400 transition group-hover:translate-x-0.5" />
+      </div>
+    </button>
+  )
+}
+
+function TeamPicker({ selected, onToggle, onDone, first }) {
+  return (
+    <>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Heading>{first ? 'Pick your teams' : 'Your teams'}</Heading>
+          <Text className="mt-1">Star the teams you follow. Their latest games show up on your home page.</Text>
+        </div>
+        <Button onClick={onDone} disabled={!selected.length}>
+          Done
+        </Button>
+      </div>
+      {CONFERENCES.map((conference) => (
+        <section key={conference.name} className="mt-8">
+          <Subheading level={3} className="mb-3">
+            {conference.name}
+          </Subheading>
+          <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {conference.teams.map(([abbr, name]) => {
+              let on = selected.includes(abbr)
+              return (
+                <li key={abbr}>
+                  <button
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => onToggle(abbr)}
+                    className={clsx(
+                      'flex w-full items-center gap-3 rounded-lg p-2 text-left ring-1 transition',
+                      on
+                        ? 'bg-amber-50 ring-amber-400/60 dark:bg-amber-400/10 dark:ring-amber-400/40'
+                        : 'ring-zinc-950/10 hover:ring-zinc-950/20 dark:ring-white/10 dark:hover:ring-white/20'
+                    )}
+                  >
+                    <TeamMark abbr={abbr} className="size-8 text-[13px]" />
+                    <span className="flex-1 text-sm/6 font-medium text-zinc-950 dark:text-white">{name}</span>
+                    {on ? (
+                      <StarIcon className="size-5 text-amber-400" />
+                    ) : (
+                      <StarOutlineIcon className="size-5 text-zinc-400" />
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ))}
+    </>
+  )
+}
+
+export function Home({ onSelectGame }) {
+  let [teams, setTeams] = useState(null)
+  let [games, setGames] = useState([])
+  // null, or 'setup' on a first visit with no teams, or 'edit'.
+  let [picker, setPicker] = useState(null)
+  let [error, setError] = useState(null)
+
+  let loadGames = useCallback(() => api.favoriteGames().then((data) => setGames(data.games)), [])
+
+  useEffect(() => {
+    Promise.all([api.favoriteTeams(), loadGames()]).then(
+      ([data]) => {
+        setTeams(data.teams)
+        if (!data.teams.length) setPicker('setup')
+      },
+      (reason) => setError(reason.message)
+    )
+  }, [loadGames])
+
+  // The star flips at once; a failed save flips just that team back.
+  async function toggle(abbr) {
+    let on = !teams.includes(abbr)
+    let flip = (add) => setTeams((current) => (add ? [...current, abbr] : current.filter((t) => t !== abbr)))
+    setError(null)
+    flip(on)
+    try {
+      await (on ? api.addFavoriteTeam(abbr) : api.removeFavoriteTeam(abbr))
+    } catch (reason) {
+      flip(!on)
+      setError(reason.message)
+    }
+  }
+
+  function done() {
+    setPicker(null)
+    loadGames().catch((reason) => setError(reason.message))
+  }
+
+  if (teams === null) {
+    return error ? <Text className="px-6 pt-10">Couldn't load your teams. {error}</Text> : null
+  }
 
   return (
-    <div className="min-h-full bg-[#f8f7f3] text-zinc-950 dark:bg-zinc-900 dark:text-white lg:rounded-lg">
-      <div className="relative overflow-hidden border-b border-zinc-200 bg-[#17251f] px-5 py-11 text-white sm:px-9 sm:py-14 lg:rounded-t-lg">
-        <div className="pointer-events-none absolute -top-28 -right-12 size-96 rounded-full border border-white/10" />
-        <div className="pointer-events-none absolute -top-14 right-2 size-72 rounded-full border border-white/10" />
-        <div className="relative mx-auto max-w-5xl">
-          <p className="mb-5 text-[11px] font-bold tracking-[.22em] text-[#b9d3bd] uppercase">Your postgame desk</p>
-          <h1 className="max-w-2xl font-score text-5xl leading-[.92] font-bold tracking-tight sm:text-7xl">The games that<br />matter to you.</h1>
-          <p className="mt-5 max-w-lg text-sm/6 text-[#d5dfd7]">Follow your NBA teams to keep their final scores and game breakdowns close at hand.</p>
-        </div>
-      </div>
-
-      <div className="mx-auto max-w-5xl px-5 py-9 sm:px-9 sm:py-12">
-        {error && <p role="alert" className="mb-6 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">{error}</p>}
-
-        <section aria-labelledby="favorites-heading">
-          <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p className="mb-1 text-[11px] font-bold tracking-[.18em] text-[#657e6b] uppercase">01 / Your lineup</p>
-              <h2 id="favorites-heading" className="font-score text-3xl font-bold sm:text-4xl">Favorite teams</h2>
-            </div>
-            <button type="button" onClick={() => { setError(''); setOpen(true) }} className="inline-flex items-center gap-2 rounded-lg bg-[#17251f] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#344c3c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#588869] dark:bg-white dark:text-zinc-950">
-              <PlusIcon className="size-4" /> Add another team
-            </button>
+    <div className="mx-auto w-full max-w-4xl px-4 pt-8 pb-12 sm:px-6">
+      {error && (
+        <p role="alert" className="mb-4 text-sm/6 text-red-600 dark:text-red-500">
+          {error}
+        </p>
+      )}
+      {picker ? (
+        <TeamPicker selected={teams} onToggle={toggle} onDone={done} first={picker === 'setup'} />
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-4">
+            <Heading>Your teams</Heading>
+            <Button outline onClick={() => setPicker('edit')}>
+              Edit teams
+            </Button>
           </div>
-
-          {favorites.status === 'loading' && <p className="py-10 text-sm text-zinc-500">Loading your teams…</p>}
-          {favorites.status === 'error' && <button type="button" onClick={refresh} className="text-sm font-semibold underline">Retry loading your teams</button>}
-          {favorites.status === 'ok' && favorites.teams.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-[#b9c9bb] bg-white px-6 py-12 text-center dark:border-zinc-700 dark:bg-zinc-800">
-              <StarIcon className="mx-auto size-8 text-[#62816a]" />
-              <h3 className="mt-4 font-score text-2xl font-bold">Start with your team</h3>
-              <p className="mx-auto mt-2 max-w-sm text-sm/6 text-zinc-500 dark:text-zinc-400">Choose a team and this page will keep its recent games in view.</p>
-              <button type="button" onClick={() => setOpen(true)} className="mt-6 rounded-lg bg-[#17251f] px-5 py-2.5 text-sm font-semibold text-white dark:bg-white dark:text-zinc-950">Choose a team</button>
-            </div>
-          )}
-          {favorites.status === 'ok' && favorites.teams.length > 0 && (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {favorites.teams.map((abbr) => (
-                <div key={abbr} className="flex items-center gap-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-                  <TeamBadge abbr={abbr} large />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{nameByAbbr[abbr]}</div>
-                    <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">Following · NBA</div>
-                  </div>
-                  <button type="button" disabled={working === abbr} onClick={() => remove(abbr)} aria-label={`Remove ${nameByAbbr[abbr]} from favorites`} title="Remove favorite" className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-50 dark:hover:bg-zinc-700 dark:hover:text-white"><XMarkIcon className="size-4" /></button>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="mt-12 border-t border-zinc-200 pt-8 dark:border-zinc-700" aria-labelledby="games-heading">
-          <p className="mb-1 text-[11px] font-bold tracking-[.18em] text-[#657e6b] uppercase">02 / Around your teams</p>
-          <h2 id="games-heading" className="font-score text-3xl font-bold sm:text-4xl">Recent finals</h2>
-          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Select a game to ask for an evidence-backed breakdown.</p>
-          {games.status === 'loading' && <p className="mt-7 text-sm text-zinc-500">Loading games…</p>}
-          {games.status === 'ok' && games.items.length === 0 && (
-            <p className="mt-7 rounded-xl border border-zinc-200 bg-white px-5 py-6 text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800">{favorites.teams.length ? 'No completed games for your teams are in the database yet.' : 'Your teams’ games will appear here once you choose a favorite.'}</p>
-          )}
-          {games.status === 'ok' && games.items.length > 0 && (
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              {games.items.map((game) => (
-                <button type="button" key={game.game_id} onClick={() => onSelectGame(game)} className="group rounded-2xl border border-zinc-200 bg-white p-5 text-left transition hover:border-[#7a9d81] hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#588869] dark:border-zinc-700 dark:bg-zinc-800">
-                  <div className="mb-4 flex items-center justify-between text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400"><span>Final · {game.season_type}</span><span>{formatGameDate(game.game_date)}</span></div>
-                  {[['away_team_abbr', 'away_score'], ['home_team_abbr', 'home_score']].map(([abbrKey, scoreKey]) => (
-                    <div key={abbrKey} className="flex items-center gap-3 py-1.5"><TeamBadge abbr={game[abbrKey]} /><span className="min-w-0 flex-1 truncate text-sm font-semibold">{nameByAbbr[game[abbrKey]] ?? game[abbrKey]}</span><span className="font-score text-2xl font-bold tabular-nums">{game[scoreKey]}</span></div>
-                  ))}
-                  <div className="mt-4 flex items-center gap-1 border-t border-zinc-100 pt-3 text-xs font-semibold text-[#42674a] dark:border-zinc-700 dark:text-[#9cc3a5]">Ask about this game <ArrowRightIcon className="size-3.5 transition group-hover:translate-x-1" /></div>
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-
-      <Headless.Dialog open={open} onClose={setOpen} className="relative z-50">
-        <Headless.DialogBackdrop className="fixed inset-0 bg-zinc-950/60" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Headless.DialogPanel className="flex max-h-[min(85vh,680px)] w-full max-w-lg flex-col rounded-2xl bg-white p-5 shadow-2xl dark:bg-zinc-900 sm:p-7">
-            <div className="flex items-start justify-between gap-4"><div><Headless.DialogTitle className="font-score text-3xl font-bold">Add a team</Headless.DialogTitle><p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Search the NBA and choose a favorite.</p></div><button type="button" onClick={() => setOpen(false)} aria-label="Close team picker" className="rounded-lg p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800"><XMarkIcon className="size-5" /></button></div>
-            <label htmlFor="team-search" className="mt-6 text-xs font-semibold text-zinc-600 dark:text-zinc-300">Search teams</label>
-            <input id="team-search" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="e.g. Toronto Raptors" className="mt-2 rounded-lg border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#588869] dark:border-zinc-700 dark:bg-zinc-800" />
-            <div className="mt-4 overflow-y-auto border-t border-zinc-100 dark:border-zinc-800">
-              {available.length === 0 && <p className="py-8 text-center text-sm text-zinc-500">No more teams match that search.</p>}
-              {available.map(({ abbr, name }) => <button type="button" key={abbr} disabled={!!working} onClick={() => add(abbr)} className="flex w-full items-center gap-3 border-b border-zinc-100 py-2.5 text-left hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:hover:bg-zinc-800"><TeamBadge abbr={abbr} /><span className="flex-1 text-sm font-medium">{name}</span><PlusIcon className="size-4 text-zinc-400" /></button>)}
-            </div>
-          </Headless.DialogPanel>
-        </div>
-      </Headless.Dialog>
+          <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+            {teams.map((abbr) => (
+              <TeamCard key={abbr} abbr={abbr} games={games.filter((g) => g.team_abbr === abbr)} onSelectGame={onSelectGame} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
