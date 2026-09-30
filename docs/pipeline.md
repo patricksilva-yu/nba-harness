@@ -68,11 +68,15 @@ weekends), so those runs cost nothing. launchd does not run jobs while the Mac
 sleeps; the first run after waking catches up. Any always-on machine with cron
 works the same way.
 
-To schedule it from GitHub Actions instead, with run history and failure emails,
-use a self-hosted runner registered to a **separate private repository** that
-holds the workflow and secrets and checks out this repository read-only. GitHub
-advises against self-hosted runners on public repositories, because anyone can
-open a pull request that runs code on them. Run only one of the two schedules.
+The goal is to run the pipeline on GitHub-hosted Actions in this repository
+instead. That depends on `cdn.nba.com` answering from GitHub's runners during the
+season, since `stats.nba.com` never does. The `NBA CDN probe` workflow
+(`.github/workflows/nba-cdn-probe.yml`) checks this daily and keeps the raw
+responses of successful calls as an artifact to build a CDN loader against. If
+the CDN stays closed to cloud runners into the regular season, the fallback is a
+commercial data provider. Self-hosted runners are not an option for this public
+repository: GitHub advises against them, because anyone can open a pull request
+that runs code on them.
 
 ## Serving
 
