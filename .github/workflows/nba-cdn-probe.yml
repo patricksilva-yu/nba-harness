@@ -1,0 +1,61 @@
+# Daily check whether GitHub-hosted runners can read the NBA's live-data CDN.
+# stats.nba.com refuses cloud providers; if cdn.nba.com answers, the post-game
+# pipeline can run here. On success the raw responses are kept as an artifact
+# to build the CDN loader against. See docs/pipeline.md.
+name: NBA CDN probe
+
+on:
+  schedule:
+    - cron: "30 16 * * *"  # daily, late morning Eastern
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet nba_api==1.11.4
+      - name: Probe live endpoints
+        shell: python
+        run: |
+          import json, os, pathlib, time
+          from nba_api.live.nba.endpoints import boxscore, playbyplay, scoreboard
+
+          out = pathlib.Path("cdn-samples"); out.mkdir()
+          lines = []
+
+          def fetch(name, call):
+              started = time.monotonic()
+              try:
+                  data = call().get_dict()
+              except Exception as exc:
+                  lines.append(f"| {name} | blocked | {time.monotonic() - started:.1f}s | {type(exc).__name__} |")
+                  return None
+              (out / f"{name}.json").write_text(json.dumps(data))
+              lines.append(f"| {name} | ok | {time.monotonic() - started:.1f}s | |")
+              return data
+
+          board = fetch("scoreboard", lambda: scoreboard.ScoreBoard(timeout=30))
+          finals = [g for g in (board or {}).get("scoreboard", {}).get("games", []) if g.get("gameStatus") == 3]
+          if board is not None:
+              lines.append(f"| games on scoreboard | {len(board['scoreboard']['games'])} ({len(finals)} final) | | {board['scoreboard'].get('gameDate')} |")
+          if finals:
+              game_id = finals[0]["gameId"]
+              fetch(f"boxscore_{game_id}", lambda: boxscore.BoxScore(game_id, timeout=30))
+              fetch(f"playbyplay_{game_id}", lambda: playbyplay.PlayByPlay(game_id, timeout=30))
+
+          summary = "| endpoint | result | time | note |\n|---|---|---|---|\n" + "\n".join(lines)
+          print(summary)
+          pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(summary + "\n")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cdn-samples
+          path: cdn-samples
+          if-no-files-found: ignore
+          retention-days: 30
