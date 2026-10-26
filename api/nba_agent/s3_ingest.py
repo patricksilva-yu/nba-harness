@@ -152,14 +152,18 @@ def parse_bundle(game_id, box, pbp):
         teams.append([game_id, side, str(team["teamId"]), team["teamTricode"],
                       *stat_values(stats, team=True, margin=margin), SOURCE])
         total = 0
+        total_minutes = 0.0
         for player in team["players"]:
             ps = player["statistics"]
             duration = minutes(ps["minutes"])
             # DNP rows retain names and zero statistics, not fabricated minutes.
             values = stat_values(ps)
             total += ps["points"]
+            total_minutes += duration
             players.append([game_id, str(player["personId"]), player["name"], team["teamTricode"],
                             duration, *values, SOURCE])
+        if abs(total_minutes - minutes(stats["minutes"])) > 0.1:
+            raise ValueError("Player minutes do not match team total")
         if not team["players"] or total != score:
             raise ValueError("Player points do not match team total")
     actions = pbp["game"]["actions"]
