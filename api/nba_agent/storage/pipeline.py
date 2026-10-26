@@ -110,20 +110,20 @@ class GamePipelineRepository:
                       (SELECT pts FROM box_scores_team WHERE game_id = g.game_id AND team_abbr = g.home_team_abbr),
                       (SELECT pts FROM box_scores_team WHERE game_id = g.game_id AND team_abbr = g.away_team_abbr),
                       (SELECT COUNT(DISTINCT team_abbr) FROM box_scores_player WHERE game_id = g.game_id),
-                      (SELECT COUNT(*) FROM box_scores_advanced_team WHERE game_id = g.game_id)
+                      (SELECT COUNT(*) FROM box_scores_advanced_team WHERE game_id = g.game_id), g.source
                FROM games AS g WHERE g.game_id = ?""",
             [game_id],
         )
         if not rows:
             return "game not stored"
-        home, away, home_score, away_score, home_pts, away_pts, player_teams, advanced = rows[0]
+        home, away, home_score, away_score, home_pts, away_pts, player_teams, advanced, source = rows[0]
         if home_pts is None or away_pts is None:
             return "team box score missing"
         if (int(home_pts), int(away_pts)) != (home_score, away_score):
             return f"team box score {away} {int(away_pts)}-{home} {int(home_pts)} differs from the final"
         if player_teams < 2:
             return "player box score missing"
-        if advanced < 2:
+        if advanced < 2 and source != "nba_s3:liveData":
             return "advanced box score missing"
         last = self._read(
             """SELECT score_home, score_away FROM play_by_play_events

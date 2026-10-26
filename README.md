@@ -137,3 +137,11 @@ Use the disposable DuckDB or PostgreSQL test configuration only for tests; never
 ```bash
 .venv/bin/pytest -q
 ```
+
+### NBA cloud collection
+
+The optional S3 loader supports overnight GitHub-hosted collection without a
+Mac staying awake. Set `NBA_DATA_SOURCE=s3` for the app and configure the nightly
+workflow's database secret. Collection makes no AI calls by default; advanced
+context uses labeled estimates where official stats are unavailable. See
+[overnight setup and limits](docs/pipeline.md#s3-overnight-collection).

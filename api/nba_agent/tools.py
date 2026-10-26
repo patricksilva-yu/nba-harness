@@ -14,9 +14,13 @@ from api.nba_agent.db import DEFAULT_DB, get_storage
 from api.nba_agent.official_ingest import (
     fetch_recent_completed_games,
     import_official_game_bundle,
+    current_nba_season,
 )
 from api.nba_agent.storage import StorageConnection, StorageError
 from api.nba_agent.storage.repositories import EvidenceRepository
+from api.nba_agent.s3_ingest import data_source, import_s3_game_bundle, sync_s3_results, WARNINGS as S3_WARNINGS
+from api.nba_agent.storage.nba_live import SOURCE as S3_SOURCE, NBALiveRepository
+from api.nba_agent.storage.pipeline import GamePipelineRepository
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +67,14 @@ def find_recent_completed_games(
     limit: int = 10,
     timeout: int = 20,
 ) -> dict[str, Any]:
+    if data_source() == "s3":
+        season = season or current_nba_season()
+        games = NBALiveRepository(get_storage()).recent_results(season, season_type, limit)
+        if not games:
+            games = sync_s3_results(season, season_type, timeout=timeout)[:limit]
+        return {"summary": {"resolution_status": "available", "season": season,
+                            "season_type": season_type, "count": len(games), "source": "nba_s3:results"},
+                "games": games, "warnings": []}
     games = fetch_recent_completed_games(
         season=season,
         season_type=season_type,
@@ -134,7 +146,7 @@ def find_recent_completed_games_for_resolution(
             "requested_season_type": season_type,
             "searched_season_types": [item["season_type"] for item in source_status],
             "count": len(games),
-            "source": "nba_api:LeagueGameLog",
+            "source": "nba_s3:results" if data_source() == "s3" else "nba_api:LeagueGameLog",
         },
         "games": games[:limit],
         "source_status": source_status,
@@ -577,7 +589,7 @@ def get_cached_games_status(
     for game in games:
         game["complete"] = (
             game["team_rows"] >= 2
-            and game["advanced_rows"] >= 2
+            and (game["advanced_rows"] >= 2 or game["source"] == S3_SOURCE)
             and game["player_rows"] > 0
             and game["pbp_rows"] > 0
         )
@@ -628,9 +640,13 @@ def ensure_game_cached(
                     "SELECT COUNT(*) FROM box_scores_advanced_team WHERE game_id = ?",
                     [game_id],
                 ).fetchone()[0]
+            source_row = con.execute("SELECT source FROM games WHERE game_id = ?", [game_id]).fetchone()
+            source = source_row[0] if source_row else None
             con.close()
             game_rows, team_rows, player_rows, pbp_rows = counts
-            has_required_cache = game_rows >= 1 and team_rows >= 2 and player_rows > 0 and pbp_rows > 0 and advanced_rows >= 2
+            has_required_cache = game_rows >= 1 and team_rows >= 2 and player_rows > 0 and pbp_rows > 0 and (advanced_rows >= 2 or source == S3_SOURCE)
+            if source == S3_SOURCE and has_required_cache:
+                has_required_cache = GamePipelineRepository(get_storage(db_path)).missing_stats(game_id) is None
             if has_required_cache:
                 return {
                     "summary": {
@@ -643,12 +659,13 @@ def ensure_game_cached(
                         "advanced_rows": advanced_rows,
                     },
                     "ingested": False,
-                    "warnings": [],
+                    "warnings": list(S3_WARNINGS) if source == S3_SOURCE else [],
                 }
         except StorageError:
             pass
 
-    ingest_result = import_official_game_bundle(
+    importer = import_s3_game_bundle if data_source() == "s3" else import_official_game_bundle
+    ingest_result = importer(
         game_id=game_id,
         db_path=db_path,
         season=season,
@@ -659,11 +676,11 @@ def ensure_game_cached(
         "summary": {
             "game_id": game_id,
             "cache_status": "refreshed" if force_refresh else "cached_from_official",
-            "source": "nba_api",
+            "source": "nba_s3" if data_source() == "s3" else "nba_api",
             "ingest_summary": ingest_result.get("summary", ingest_result) if isinstance(ingest_result, dict) else None,
         },
         "ingested": True,
-        "warnings": [],
+        "warnings": ingest_result.get("warnings", []),
     }
 
 
@@ -693,7 +710,7 @@ def get_game_snapshot(
         return {"summary": {"resolution_status": "not_found", "game_id": game_id}}
     cols = [d[0] for d in con.description]
     game_row = dict(zip(cols, game))
-    source_provider = "nba_official" if str(game_row.get("source", "")).startswith("nba_api:") else "local_fixture"
+    source_provider = "nba_official" if str(game_row.get("source", "")).startswith(("nba_api:", "nba_s3:")) else "local_fixture"
     teams = con.execute(
         """
         SELECT team_side, team_abbr, fgm, fga, fg_pct, fg3m, fg3a, fg3_pct,
@@ -1110,7 +1127,7 @@ def find_decisive_runs(
         [game_id],
     ).fetchone()
     source_detail = pbp_source[0] if pbp_source else "old/nba.sqlite:play_by_play"
-    source_provider = "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture"
+    source_provider = "nba_official" if str(source_detail).startswith(("nba_api:", "nba_s3:")) else "local_fixture"
     candidates: list[dict[str, Any]] = []
     for start_idx in range(len(events)):
         start = events[start_idx]
@@ -1261,7 +1278,7 @@ def get_possession_summary(
     con.close()
     terminal_like, turnovers, free_throw_events, shot_events = rows
     source_detail = pbp_source[0] if pbp_source else "old/nba.sqlite:play_by_play"
-    source_provider = "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture"
+    source_provider = "nba_official" if str(source_detail).startswith(("nba_api:", "nba_s3:")) else "local_fixture"
     packet = {
         "packet_id": packet_id("possession-summary", game_id),
         "type": "possession_segment_summary",
@@ -1427,6 +1444,7 @@ def get_advanced_game_context(
 
     away_metrics = metrics(away, home)
     home_metrics = metrics(home, away)
+    leader = away["team_abbr"] if away_metrics["points_per_est_possession"] > home_metrics["points_per_est_possession"] else home["team_abbr"]
     metric_edges = {
         "efg_pct": diff(away_metrics["efg_pct"], home_metrics["efg_pct"]),
         "three_point_rate": diff(away_metrics["three_point_rate"], home_metrics["three_point_rate"]),
@@ -1445,7 +1463,7 @@ def get_advanced_game_context(
             "packet_id": packet_id("adv", game_id, "fallback-four-factors"),
             "type": "advanced_context",
             "claim_seed": (
-                f"Fallback box-score advanced context favors {away_abbr} through "
+                f"Fallback box-score advanced context favors {leader} through "
                 f"efficiency, turnover margin, and three-point shooting."
             ),
             "metrics": {
@@ -1455,7 +1473,7 @@ def get_advanced_game_context(
             },
             "source": {
                 "provider": "local_fallback",
-                "detail": "box_scores_team formulas; official NBA advanced endpoints not wired yet",
+                "detail": "box_scores_team formulas; official advanced rows unavailable for this game",
             },
             "evidence_level": "fallback_advanced",
             "confidence": "medium",
@@ -1571,12 +1589,12 @@ def get_player_game_context(
                 ),
                 "metrics": compact,
                 "source": {
-                    "provider": "nba_official" if str(player["source"]).startswith("nba_api:") else "local_seed",
+                    "provider": "nba_official" if str(player["source"]).startswith(("nba_api:", "nba_s3:")) else "local_seed",
                     "detail": player["source"],
                 },
                 "evidence_level": "core",
-                "confidence": "high" if str(player["source"]).startswith("nba_api:") else "medium",
-                "caveats": [] if str(player["source"]).startswith("nba_api:") else ["Player names may require enrichment when sourced from seed logs."],
+                "confidence": "high" if str(player["source"]).startswith(("nba_api:", "nba_s3:")) else "medium",
+                "caveats": [] if str(player["source"]).startswith(("nba_api:", "nba_s3:")) else ["Player names may require enrichment when sourced from seed logs."],
             }
         )
     return with_persisted_packets(game_id, {
@@ -1762,7 +1780,7 @@ def get_game_window(
         "window": {"period_start": period, "clock_start": from_clock, "period_end": end_period, "clock_end": to_clock},
         "metrics": summary,
         "plays": plays,
-        "source": {"provider": "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture",
+        "source": {"provider": "nba_official" if str(source_detail).startswith(("nba_api:", "nba_s3:")) else "local_fixture",
                    "detail": source_detail},
         "evidence_level": "core",
         "confidence": "high" if selected else "low",
@@ -1824,7 +1842,7 @@ def get_period_summary(game_id: str, db_path: Path = DEFAULT_DB, persist: bool =
         "claim_seed": f"Final {periods[-1]['score_at_end'] if periods else ''}. {lead_text}. "
                       f"{lead_changes} lead changes, {ties} ties.".strip(),
         "metrics": {"periods": periods, "largest_lead": largest, "lead_changes": lead_changes, "ties": ties},
-        "source": {"provider": "nba_official" if str(source_detail).startswith("nba_api:") else "local_fixture",
+        "source": {"provider": "nba_official" if str(source_detail).startswith(("nba_api:", "nba_s3:")) else "local_fixture",
                    "detail": source_detail},
         "evidence_level": "core",
         "confidence": "high" if scored else "low",
