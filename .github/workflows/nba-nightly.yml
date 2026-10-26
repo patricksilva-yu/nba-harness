@@ -1,0 +1,106 @@
+name: NBA overnight collection
+
+on:
+  schedule:
+    - cron: "0 11 * * *" # 06:00 EST / 07:00 EDT, after West Coast games
+  workflow_dispatch:
+    inputs:
+      smoke_only:
+        description: "Test public NBA data against disposable PostgreSQL only"
+        type: boolean
+        default: true
+      date:
+        description: "Optional NBA game date (YYYY-MM-DD); otherwise catch up seven days"
+        type: string
+      max_analyses:
+        description: "Paid AI breakdowns allowed (0 keeps collection free; maximum 5)"
+        type: choice
+        options: ["0", "1", "5"]
+        default: "0"
+  push:
+    branches: [codex/nba-s3-ingestion]
+    paths:
+      - '.github/workflows/nba-nightly.yml'
+      - 'api/nba_agent/s3_ingest.py'
+      - 'api/nba_agent/storage/nba_live.py'
+      - 'scripts/check_nba_s3.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nba-overnight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.smoke_only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: nba_test
+          POSTGRES_USER: nba_test
+          POSTGRES_PASSWORD: nba_test_local_only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nba_test -d nba_test"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    env:
+      NBA_STORAGE_BACKEND: postgres
+      NBA_DATA_SOURCE: s3
+      POSTGRES_CONNECTION_STRING: postgresql://nba_test:nba_test_local_only@127.0.0.1:5432/nba_test
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet -r requirements.txt
+      - run: alembic upgrade head
+      - run: python scripts/check_nba_s3.py --game-id 0022600110
+
+  collect:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.smoke_only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NBA_STORAGE_BACKEND: postgres
+      NBA_DATA_SOURCE: s3
+      POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
+      NBA_POSTGRES_SCHEMA: ${{ vars.NBA_POSTGRES_SCHEMA }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      NBA_OPENAI_MODEL: ${{ vars.NBA_OPENAI_MODEL }}
+      REQUESTED_DATE: ${{ inputs.date }}
+      MAX_ANALYSES: ${{ inputs.max_analyses || '0' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Check configuration
+        shell: python
+        run: |
+          import os
+          if not os.getenv('POSTGRES_CONNECTION_STRING'):
+              raise SystemExit('Configure the POSTGRES_CONNECTION_STRING repository secret first.')
+          if int(os.environ['MAX_ANALYSES']) and not all(os.getenv(k) for k in ('OPENAI_API_KEY', 'NBA_OPENAI_MODEL')):
+              raise SystemExit('Paid breakdowns require OPENAI_API_KEY and NBA_OPENAI_MODEL.')
+      - run: pip install --quiet -r requirements.txt
+      - name: Collect completed followed-team games
+        shell: python
+        run: |
+          import os, subprocess, sys
+          args = [sys.executable, '-m', 'api.nba_agent.pipeline', '--overnight',
+                  '--max-games', '100', '--max-analyses', os.environ['MAX_ANALYSES']]
+          if os.environ.get('REQUESTED_DATE'):
+              args += ['--date', os.environ['REQUESTED_DATE']]
+          with open('nba-collection-summary.json', 'w') as output:
+              result = subprocess.run(args, stdout=output)
+          with open('nba-collection-summary.json') as output:
+              summary = output.read()
+          print(summary)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('```json\n' + summary + '\n```\n')
+          raise SystemExit(result.returncode)

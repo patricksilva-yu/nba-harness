@@ -207,7 +207,7 @@ def upsert_game_results(con, games: list[dict[str, Any]]) -> int:
     return len(games)
 
 
-GAME_ID_SEASON_TYPES = {"002": "Regular Season", "004": "Playoffs", "005": "PlayIn"}
+GAME_ID_SEASON_TYPES = {"001": "Pre Season", "002": "Regular Season", "004": "Playoffs", "005": "PlayIn"}
 
 
 def season_for_game(game_id: str, season: str | None, season_type: str) -> tuple[str, str]:

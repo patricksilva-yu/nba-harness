@@ -94,3 +94,80 @@ One breakdown for 2026 Finals Game 5 used 8 model turns, 6 tool calls, about
 with the number of followed games, not with the number of fans. Set the
 `NBA_HARNESS_*_USD_PER_MILLION` rates to record each run's cost, and
 `--max-analyses` bounds a pass. Supabase's free tier and launchd cost nothing.
+
+## S3 overnight collection
+
+The S3 loader is selected with `NBA_DATA_SOURCE=s3` (default remains `stats`).
+It discovers completed games from `NBA/staticData/scheduleLeagueV2.json` and
+atomically saves each game's team/player box scores and play-by-play. It checks
+feed game IDs, final status, player/team score agreement, period coverage and a
+matching Game End score before changing stored data. Retries replace per-game
+rows without duplicates; a failed transaction preserves the previous bundle.
+Player-minute validation allows up to one second of rounding per roster row.
+Play-by-play storage keys follow the published array order, not `actionNumber`:
+corrections receive new IDs even when they belong earlier in the timeline.
+Original action numbers remain in the captured raw response. The schedule
+refresh retains fully imported games and updates results-only rows.
+It covers the season currently published by the NBA, not arbitrary historical
+seasons. Previously stored results remain available for game resolution.
+
+S3 bundles intentionally have no fabricated official advanced-stat rows. The
+existing advanced-context tool supplies labeled box-score estimates when those
+rows are missing; official pace, ratings, possessions and PIE remain unavailable.
+The pipeline and cache accept validated S3 bundles without official advanced
+rows. Official imports still require their advanced rows. Rotations are limited
+to clearly qualified substitution context. The API/MCP process should also set
+`NBA_DATA_SOURCE=s3` so uncached questions do not contact blocked stats endpoints.
+No PostgreSQL schema changes are required for this loader.
+
+`.github/workflows/nba-nightly.yml` runs at 11:00 UTC (6 am Eastern in winter,
+7 am in summer), once it is on the default branch. Each run discovers finals
+from the last seven Eastern dates, records all final results, and loads details
+only for teams fans follow. Previously queued games remain eligible for retry.
+The workflow serializes runs and caps each pass at 100 games. Failed discovery
+or a game waiting for retry gives a failing run and a JSON summary, so a green
+run does not hide an unsuccessful pull. Source requests retry three times with
+bounded timeouts. A failed game's next pipeline attempt is on the next run;
+manual dispatch can retry sooner after the 15-minute retry delay.
+
+Required repository secret: `POSTGRES_CONNECTION_STRING`, pointing to the same
+migrated database as the app. Optional repository variable: `NBA_POSTGRES_SCHEMA`.
+Do not place credentials in workflow files. The workflow never migrates the
+application database. GitHub scheduled jobs can be delayed and public-repository
+schedules can be disabled after inactivity; check Actions when a daily update is
+missing. GitHub/Supabase free-tier limits still apply.
+
+Scheduled collection uses `--max-analyses 0`: no model calls or model charges.
+Games appear in the home page with their final scores and can be asked about;
+a shared AI breakdown is not generated until analysis is explicitly enabled.
+Manual collection permits at most five paid breakdowns. That requires an
+`OPENAI_API_KEY` repository secret and an explicit `NBA_OPENAI_MODEL` variable.
+
+To run locally with the configured application database:
+
+```bash
+source .venv/bin/activate
+NBA_DATA_SOURCE=s3 python -m api.nba_agent.pipeline --overnight --max-games 100 --max-analyses 0
+```
+
+A manual workflow defaults to **smoke only**, which imports an actual overtime
+game twice into a disposable PostgreSQL service, exercises analysis evidence,
+and makes no model calls. Choose `smoke_only=false` to collect into the app's
+database. `scripts/check_nba_s3.py` refuses non-local/non-test database targets.
+Run it locally only with the explicit disposable database configuration from
+`docs/postgresql-development.md`; migrations must be applied to that disposable
+database first. The access probe and raw-sample artifacts are diagnostic only;
+the nightly collector writes directly to PostgreSQL.
+
+### October 26 validation
+
+Live tests passed from GitHub against disposable PostgreSQL, including the
+pipeline, favorites home query, actual MCP calls and duplicate-free replay.
+A stats-only GitHub run also connected to the restored application database.
+Six completed Toronto/New York games from the seven-day catch-up window were
+loaded and the pending queue was cleared. The full local regression suite with
+the explicit disposable PostgreSQL URL passed: 225 tests. No model calls were
+made; shared AI breakdowns remain disabled on the scheduled collector.
+
+[End-to-end GitHub smoke test](https://github.com/patricksilva-yu/nba-harness/actions/runs/40413566737)
+and [app database collection test](https://github.com/patricksilva-yu/nba-harness/actions/runs/40413817408).

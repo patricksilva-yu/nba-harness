@@ -24,6 +24,7 @@ from api.nba_agent.db import get_storage
 from api.nba_agent.harness import run_harness
 from api.nba_agent.storage.pipeline import GamePipelineRepository
 from api.nba_agent.sync_results import sync_results
+from api.nba_agent.s3_ingest import data_source, sync_s3_results
 from api.nba_agent.tools import ensure_game_cached, season_for_date
 
 BREAKDOWN_QUESTION = "What decided this game?"
@@ -87,7 +88,12 @@ async def run_once(dates: list[str], *, sync: bool = True, max_games: int = 10, 
     repository = GamePipelineRepository(storage)
     summary = {"dates": dates, "sync_errors": [], "loaded": [], "analyzed": [], "waiting": []}
 
-    if sync:
+    if sync and data_source() == "s3":
+        try:
+            sync_s3_results()
+        except Exception as exc:
+            summary["sync_errors"].append(f"s3: {type(exc).__name__}")
+    elif sync:
         for season in sorted({season_for_date(day) for day in dates}):
             try:
                 sync_results([season])
@@ -106,6 +112,7 @@ async def run_once(dates: list[str], *, sync: bool = True, max_games: int = 10, 
             continue
         analyses += 1
         (summary["analyzed"] if await analyze(repository, game) else summary["waiting"]).append(game["game_id"])
+    summary["pending"] = repository.pending_games()
     return summary
 
 
@@ -113,17 +120,32 @@ def main() -> int:
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--date", action="append", help="Game date (YYYY-MM-DD) to process instead of today and yesterday; repeatable.")
+    parser.add_argument("--overnight", action="store_true", help="Run outside the game window and discover finals from the last seven days.")
     parser.add_argument("--no-sync", action="store_true", help="Use stored results instead of fetching the league game log.")
     parser.add_argument("--max-games", type=int, default=10)
     parser.add_argument("--max-analyses", type=int, default=5, help="Harness runs allowed in this pass (each costs model tokens).")
     args = parser.parse_args()
-    if not args.date and not in_game_window(datetime.now(EASTERN)):
+    if args.max_games < 1 or args.max_analyses < 0:
+        parser.error("max-games must be positive and max-analyses nonnegative")
+    if args.date:
+        try:
+            for day in args.date:
+                date.fromisoformat(day)
+        except ValueError:
+            parser.error("date must be YYYY-MM-DD")
+    if not args.date and not args.overnight and not in_game_window(datetime.now(EASTERN)):
         print(json.dumps({"skipped": "outside the game window"}))
         return 0
-    summary = asyncio.run(run_once(args.date or eastern_dates(), sync=not args.no_sync,
-                                   max_games=args.max_games, max_analyses=args.max_analyses))
+    dates = args.date or ([(datetime.now(EASTERN).date() - timedelta(days=n)).isoformat() for n in range(7)]
+                          if args.overnight else eastern_dates())
+    try:
+        summary = asyncio.run(run_once(dates, sync=not args.no_sync,
+                                       max_games=args.max_games, max_analyses=args.max_analyses))
+    except Exception as exc:
+        print(json.dumps({"error": type(exc).__name__, "stage": "pipeline"}))
+        return 1
     print(json.dumps(summary))
-    return 0
+    return 1 if summary["sync_errors"] or summary["waiting"] or summary["pending"] else 0
 
 
 if __name__ == "__main__":

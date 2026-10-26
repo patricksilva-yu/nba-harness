@@ -19,7 +19,7 @@ class ToolFailure(Exception):
 def local_client(db_path: Path, timeout: float) -> Client:
     # The NBA server needs storage configuration, never model credentials.
     env = {key: value for key, value in os.environ.items() if key.startswith("NBA_DB_") or key in {
-        "PATH", "SYSTEMROOT", "NBA_STORAGE_BACKEND", "POSTGRES_CONNECTION_STRING", "NBA_POSTGRES_SCHEMA",
+        "PATH", "SYSTEMROOT", "NBA_STORAGE_BACKEND", "NBA_DATA_SOURCE", "POSTGRES_CONNECTION_STRING", "NBA_POSTGRES_SCHEMA",
     }}
     env["NBA_MCP_DB_PATH"] = str(db_path.resolve())
     env["FASTMCP_SHOW_SERVER_BANNER"] = "false"
