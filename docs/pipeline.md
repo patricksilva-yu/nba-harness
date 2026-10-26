@@ -94,3 +94,20 @@ One breakdown for 2026 Finals Game 5 used 8 model turns, 6 tool calls, about
 with the number of followed games, not with the number of fans. Set the
 `NBA_HARNESS_*_USD_PER_MILLION` rates to record each run's cost, and
 `--max-analyses` bounds a pass. Supabase's free tier and launchd cost nothing.
+
+## Cloud access probe (October 2026 update)
+
+The September access observations above are historical, not a guarantee about
+all cloud connections. The `NBA CDN probe` workflow now checks the CDN, the
+public NBA-named S3 live-data bucket, and the stats endpoints for season results,
+traditional and advanced box scores, play-by-play and rotations. Manual runs
+accept a completed `game_id`; the default is regular-season game `0022600110`.
+The daily probe continues on its existing schedule.
+
+The summary distinguishes full stats access from S3 basic access. S3 box scores
+do not contain every advanced metric the loader currently imports. A successful
+S3-only probe therefore does not mean the existing pipeline can run unchanged.
+The job fails if neither complete stats access nor all three basic S3 checks
+succeed, and saves its summary and successful public responses even on failure.
+No database credentials or model calls are involved. This is an access test; it
+does not install an overnight ingestion schedule.

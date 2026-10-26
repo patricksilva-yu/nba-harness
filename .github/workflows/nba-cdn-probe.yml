@@ -1,13 +1,16 @@
-# Daily check whether GitHub-hosted runners can read the NBA's live-data CDN.
-# stats.nba.com refuses cloud providers; if cdn.nba.com answers, the post-game
-# pipeline can run here. On success the raw responses are kept as an artifact
-# to build the CDN loader against. See docs/pipeline.md.
+# Check public NBA data access from GitHub-hosted runners. See docs/pipeline.md.
 name: NBA CDN probe
 
 on:
   schedule:
     - cron: "30 16 * * *"  # daily, late morning Eastern
   workflow_dispatch:
+    inputs:
+      game_id:
+        description: "Completed game to test (default: regular-season game 0022600110)"
+        default: "0022600110"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,39 +24,104 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --quiet nba_api==1.11.4
-      - name: Probe live endpoints
+      - name: Probe NBA data sources
+        env:
+          PROBE_GAME_ID: ${{ inputs.game_id }}
         shell: python
         run: |
-          import json, os, pathlib, time
-          from nba_api.live.nba.endpoints import boxscore, playbyplay, scoreboard
+          import concurrent.futures, json, os, pathlib, re, time, urllib.request
+          from nba_api.stats.endpoints import (
+              boxscoreadvancedv3, boxscoretraditionalv3, gamerotation,
+              leaguegamelog, playbyplayv3,
+          )
 
-          out = pathlib.Path("cdn-samples"); out.mkdir()
-          lines = []
+          out = pathlib.Path("cdn-samples")
+          out.mkdir()
+          game_id = os.environ.get("PROBE_GAME_ID") or "0022600110"
+          if not re.fullmatch(r"00[1245]\d{7}", game_id):
+              raise ValueError("Expected a ten-digit NBA game ID")
+          season_year = 2000 + int(game_id[3:5])
+          season = f"{season_year}-{(season_year + 1) % 100:02d}"
+          season_type = {"001": "Pre Season", "002": "Regular Season", "004": "Playoffs", "005": "PlayIn"}[game_id[:3]]
 
-          def fetch(name, call):
+
+          def live(base, path, kind):
+              with urllib.request.urlopen(f"{base}/{path}", timeout=25) as response:
+                  data = json.load(response)
+              if kind == "scoreboard":
+                  board = data["scoreboard"]
+                  note = f"{board['gameDate']}: {len(board['games'])} games"
+              else:
+                  game = data["game"]
+                  assert game["gameId"] == game_id
+                  if kind == "boxscore":
+                      assert game["gameStatus"] == 3, "Test game is not final"
+                      assert game["homeTeam"]["players"] and game["awayTeam"]["players"]
+                      note = "Final; player and team box scores present"
+                  else:
+                      assert game["actions"], "No play-by-play actions"
+                      note = f"{len(game['actions'])} actions"
+              return data, note
+
+
+          def stats(endpoint, **kwargs):
+              response = endpoint(timeout=25, **kwargs)
+              frames = response.get_data_frames()
+              assert any(not frame.empty for frame in frames), "Empty response"
+              if endpoint == boxscoreadvancedv3.BoxScoreAdvancedV3:
+                  teams = frames[1]
+                  required = ["offensiveRating", "defensiveRating", "pace", "possessions", "PIE"]
+                  assert len(teams) == 2 and teams[required].notna().all().all(), "Incomplete advanced team stats"
+                  note = "Both teams: ratings, pace, possessions and PIE present"
+              else:
+                  note = f"{sum(len(frame) for frame in frames)} rows"
+              return response.get_dict(), note
+
+
+          checks = []
+          for source, base in [
+              ("cdn", "https://cdn.nba.com/static/json/liveData"),
+              ("s3", "https://nba-prod-us-east-1-mediaops-stats.s3.amazonaws.com/NBA/liveData"),
+          ]:
+              for kind in ["scoreboard", "boxscore", "playbyplay"]:
+                  path = "scoreboard/todaysScoreboard_00.json" if kind == "scoreboard" else f"{kind}/{kind}_{game_id}.json"
+                  checks.append((f"{source}_{kind}", lambda base=base, path=path, kind=kind: live(base, path, kind)))
+          for name, endpoint in [
+              ("traditional", boxscoretraditionalv3.BoxScoreTraditionalV3),
+              ("advanced", boxscoreadvancedv3.BoxScoreAdvancedV3),
+              ("playbyplay", playbyplayv3.PlayByPlayV3),
+              ("rotation", gamerotation.GameRotation),
+          ]:
+              checks.append((f"stats_{name}", lambda endpoint=endpoint: stats(endpoint, game_id=game_id)))
+          checks.append(("stats_results", lambda: stats(leaguegamelog.LeagueGameLog, season=season, season_type_all_star=season_type)))
+
+
+          def check(item):
+              name, call = item
               started = time.monotonic()
               try:
-                  data = call().get_dict()
+                  data, note = call()
+                  (out / f"{name}.json").write_text(json.dumps(data))
+                  return name, True, round(time.monotonic() - started, 1), note
               except Exception as exc:
-                  lines.append(f"| {name} | blocked | {time.monotonic() - started:.1f}s | {type(exc).__name__} |")
-                  return None
-              (out / f"{name}.json").write_text(json.dumps(data))
-              lines.append(f"| {name} | ok | {time.monotonic() - started:.1f}s | |")
-              return data
+                  return name, False, round(time.monotonic() - started, 1), f"{type(exc).__name__}: {str(exc)[:160]}".replace("|", "/").replace("\n", " ")
 
-          board = fetch("scoreboard", lambda: scoreboard.ScoreBoard(timeout=30))
-          finals = [g for g in (board or {}).get("scoreboard", {}).get("games", []) if g.get("gameStatus") == 3]
-          if board is not None:
-              lines.append(f"| games on scoreboard | {len(board['scoreboard']['games'])} ({len(finals)} final) | | {board['scoreboard'].get('gameDate')} |")
-          if finals:
-              game_id = finals[0]["gameId"]
-              fetch(f"boxscore_{game_id}", lambda: boxscore.BoxScore(game_id, timeout=30))
-              fetch(f"playbyplay_{game_id}", lambda: playbyplay.PlayByPlay(game_id, timeout=30))
 
-          summary = "| endpoint | result | time | note |\n|---|---|---|---|\n" + "\n".join(lines)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              results = list(pool.map(check, checks))
+          passed = {name for name, ok, _, _ in results if ok}
+          full_stats = all(f"stats_{kind}" in passed for kind in ["traditional", "advanced", "playbyplay", "rotation", "results"])
+          s3_basic = all(f"s3_{kind}" in passed for kind in ["scoreboard", "boxscore", "playbyplay"])
+          summary = f"Game: {game_id}. Full stats source: {full_stats}. S3 basic source: {s3_basic}.\n\n"
+          summary += "| endpoint | result | seconds | detail |\n|---|---|---|---|\n"
+          summary += "\n".join(f"| {name} | {'ok' if ok else 'failed'} | {seconds} | {note} |" for name, ok, seconds, note in results)
           print(summary)
+          (out / "summary.md").write_text(summary + "\n")
           pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(summary + "\n")
+          if not full_stats and not s3_basic:
+              raise SystemExit("Neither full stats access nor S3 basic access succeeded")
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: cdn-samples
           path: cdn-samples
