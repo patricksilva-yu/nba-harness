@@ -111,3 +111,14 @@ The job fails if neither complete stats access nor all three basic S3 checks
 succeed, and saves its summary and successful public responses even on failure.
 No database credentials or model calls are involved. This is an access test; it
 does not install an overnight ingestion schedule.
+
+A manual GitHub-hosted Ubuntu run on 2026-10-26 confirmed S3 access for the
+scoreboard (nine scheduled games), a completed regular-season box score
+(`0022600110`), and its 657 play-by-play actions. Each S3 call completed in
+under one second. All three CDN requests returned HTTP 403; all five stats
+requests timed out after 25 seconds, including advanced stats.
+[Probe run and downloadable samples](https://github.com/patricksilva-yu/nba-harness/actions/runs/40411494801).
+This establishes basic cloud access for this sample, not full historical
+coverage or long-term availability. The next implementation step is an S3
+loader with explicit handling for unavailable advanced stats and rotations,
+followed by an overnight ingestion schedule.
