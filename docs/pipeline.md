@@ -158,3 +158,16 @@ Run it locally only with the explicit disposable database configuration from
 `docs/postgresql-development.md`; migrations must be applied to that disposable
 database first. The access probe and raw-sample artifacts are diagnostic only;
 the nightly collector writes directly to PostgreSQL.
+
+### October 26 validation
+
+Live tests passed from GitHub against disposable PostgreSQL, including the
+pipeline, favorites home query, actual MCP calls and duplicate-free replay.
+A stats-only GitHub run also connected to the restored application database.
+Six completed Toronto/New York games from the seven-day catch-up window were
+loaded and the pending queue was cleared. The full local regression suite with
+the explicit disposable PostgreSQL URL passed: 225 tests. No model calls were
+made; shared AI breakdowns remain disabled on the scheduled collector.
+
+[End-to-end GitHub smoke test](https://github.com/patricksilva-yu/nba-harness/actions/runs/40413566737)
+and [app database collection test](https://github.com/patricksilva-yu/nba-harness/actions/runs/40413817408).
