@@ -53,7 +53,7 @@ def main():
         con.close()
     favorites.add(fan, abbr)
     collection = asyncio.run(pipeline.run_once([str(game_date)[:10]], sync=False, max_games=100, max_analyses=0))
-    assert args.game_id in collection['loaded']
+    assert not collection['waiting']
     assert GamePipelineRepository(storage).get(args.game_id)['status'] == 'loaded'
     repeated = asyncio.run(pipeline.run_once([str(game_date)[:10]], sync=False, max_games=100, max_analyses=0))
     assert not repeated['loaded'] and not repeated['analyzed']

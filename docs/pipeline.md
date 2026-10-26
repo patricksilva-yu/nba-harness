@@ -103,7 +103,11 @@ atomically saves each game's team/player box scores and play-by-play. It checks
 feed game IDs, final status, player/team score agreement, period coverage and a
 matching Game End score before changing stored data. Retries replace per-game
 rows without duplicates; a failed transaction preserves the previous bundle.
-The schedule refresh retains fully imported games and updates results-only rows.
+Player-minute validation allows up to one second of rounding per roster row.
+Play-by-play storage keys follow the published array order, not `actionNumber`:
+corrections receive new IDs even when they belong earlier in the timeline.
+Original action numbers remain in the captured raw response. The schedule
+refresh retains fully imported games and updates results-only rows.
 It covers the season currently published by the NBA, not arbitrary historical
 seasons. Previously stored results remain available for game resolution.
 

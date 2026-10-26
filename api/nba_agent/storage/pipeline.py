@@ -103,6 +103,11 @@ class GamePipelineRepository:
             [error, utc_now() + delay, max_attempts, game_id],
         )
 
+    def pending_games(self) -> list[str]:
+        """Include retries not due yet so a collection summary cannot hide them."""
+        return [row[0] for row in self._read(
+            "SELECT game_id FROM game_pipeline WHERE status IN ('pending', 'failed') ORDER BY game_id", [])]
+
     def missing_stats(self, game_id: str) -> str | None:
         """Why the stored stats don't yet match the final, or None when they do."""
         rows = self._read(

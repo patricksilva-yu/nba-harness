@@ -177,10 +177,27 @@ def test_s3_preserves_a_complete_official_bundle(storage, feeds):
     try:
         c.execute("UPDATE games SET source = 'nba_api:LeagueGameLog'")
         for team_id, abbr in [(1, "DEN"), (2, "NOP")]:
-            c.execute("INSERT INTO box_scores_advanced_team (game_id, team_id, team_abbr) VALUES (?, ?, ?)",
+            c.execute("INSERT INTO box_scores_advanced_team (game_id, team_id, team_abbr, source) VALUES (?, ?, ?, 'nba_api:BoxScoreAdvancedV3')",
                       [GID, str(team_id), abbr])
     finally:
         c.close()
     save(storage, feeds)
     assert read(storage, "SELECT source FROM games") == [("nba_api:LeagueGameLog",)]
     assert read(storage, "SELECT COUNT(*) FROM raw_responses") == [(2,)]
+
+
+def test_late_correction_action_id_does_not_reorder_final_score(storage, feeds):
+    box, pbp = feeds
+    correction = {**pbp["game"]["actions"][0], "actionNumber": 9000, "period": 4,
+                  "scoreHome": "130", "scoreAway": "120"}
+    pbp["game"]["actions"].insert(-2, correction)
+    save(storage, feeds)
+    assert GamePipelineRepository(storage).missing_stats(GID) is None
+    assert read(storage, "SELECT score_home, score_away FROM play_by_play_events ORDER BY eventnum DESC LIMIT 1") == [(141, 135)]
+
+
+def test_missing_player_minutes_rejected_even_when_points_agree(feeds):
+    box, pbp = feeds
+    box["game"]["homeTeam"]["players"][0]["statistics"]["minutes"] = "PT00M00.00S"
+    with pytest.raises(ValueError, match="minutes"):
+        s3_ingest.parse_bundle(GID, box, pbp)

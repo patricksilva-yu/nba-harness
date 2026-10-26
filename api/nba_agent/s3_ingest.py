@@ -162,7 +162,7 @@ def parse_bundle(game_id, box, pbp):
             total_minutes += duration
             players.append([game_id, str(player["personId"]), player["name"], team["teamTricode"],
                             duration, *values, SOURCE])
-        if abs(total_minutes - minutes(stats["minutes"])) > 0.1:
+        if abs(total_minutes - minutes(stats["minutes"])) > len(team["players"]) / 60 + 0.001:
             raise ValueError("Player minutes do not match team total")
         if not team["players"] or total != score:
             raise ValueError("Player points do not match team total")
@@ -178,7 +178,10 @@ def parse_bundle(game_id, box, pbp):
     if periods != set(range(1, int(game["period"]) + 1)):
         raise ValueError("Play-by-play is missing a period")
     ids = set()
-    for action in actions:
+    # The published array is chronological. Corrected actions can carry a new,
+    # higher actionNumber while belonging earlier in the game. Store a sequence
+    # key for existing SQL timelines; original action IDs remain in the raw feed.
+    for sequence, action in enumerate(actions, start=1):
         event = int(action["actionNumber"])
         if event in ids:
             raise ValueError("Duplicate play-by-play action")
@@ -188,7 +191,7 @@ def parse_bundle(game_id, box, pbp):
         home = team_id == record["home_team_id"]
         away = team_id == record["away_team_id"]
         sh, sa = int(action["scoreHome"]), int(action["scoreAway"])
-        events.append([game_id, event, event_type(action), None, int(action["period"]),
+        events.append([game_id, sequence, event_type(action), None, int(action["period"]),
                        clock_to_pctimestring(action["clock"]), description if home else None,
                        description if not home and not away else None, description if away else None,
                        f"{sa} - {sh}", sa, sh,

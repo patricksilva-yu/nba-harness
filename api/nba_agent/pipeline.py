@@ -112,6 +112,7 @@ async def run_once(dates: list[str], *, sync: bool = True, max_games: int = 10, 
             continue
         analyses += 1
         (summary["analyzed"] if await analyze(repository, game) else summary["waiting"]).append(game["game_id"])
+    summary["pending"] = repository.pending_games()
     return summary
 
 
@@ -144,7 +145,7 @@ def main() -> int:
         print(json.dumps({"error": type(exc).__name__, "stage": "pipeline"}))
         return 1
     print(json.dumps(summary))
-    return 1 if summary["sync_errors"] or summary["waiting"] else 0
+    return 1 if summary["sync_errors"] or summary["waiting"] or summary["pending"] else 0
 
 
 if __name__ == "__main__":
