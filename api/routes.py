@@ -22,6 +22,7 @@ from api.nba_agent.harness.spans import build_spans, summarize
 from api.nba_agent.storage.repositories import HarnessRunRepository
 from api.nba_agent.storage.favorites import FavoriteTeamsRepository
 from api.nba_agent.storage.pipeline import GamePipelineRepository
+from api.nba_agent.storage.game_overview import GameOverviewRepository
 from api.nba_agent.storage import StorageError, storage_health
 from api.nba_agent.tools import (
     find_recent_completed_games,
@@ -192,6 +193,18 @@ def conversation(conversation_id: str, viewer: Viewer = Depends(require_user)) -
     if not records:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"conversation_id": conversation_id, "runs": [public_run(record) for record in records]}
+
+
+@router.get("/api/games/{game_id}/overview")
+def game_overview(game_id: str, viewer: Viewer = Depends(require_user)) -> dict[str, Any]:
+    """Saved stats only: opening a game never fetches upstream data or calls a model."""
+    try:
+        overview = GameOverviewRepository(get_storage()).get(game_id)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail="Saved game stats are temporarily unavailable") from exc
+    if overview is None:
+        raise HTTPException(status_code=404, detail="No saved result for this game")
+    return overview
 
 
 @router.get("/api/games/{game_id}/breakdown")

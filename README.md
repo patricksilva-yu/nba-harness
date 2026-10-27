@@ -145,3 +145,7 @@ Mac staying awake. Set `NBA_DATA_SOURCE=s3` for the app and configure the nightl
 workflow's database secret. Collection makes no AI calls by default; advanced
 context uses labeled estimates where official stats are unavailable. See
 [overnight setup and limits](docs/pipeline.md#s3-overnight-collection).
+
+Selecting a collected NBA game opens saved team stats, scoring leaders and the
+scoring timeline before asking a question. Browsing these stats does not invoke
+a model; questions still use the analysis harness.

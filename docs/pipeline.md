@@ -171,3 +171,17 @@ made; shared AI breakdowns remain disabled on the scheduled collector.
 
 [End-to-end GitHub smoke test](https://github.com/patricksilva-yu/nba-harness/actions/runs/40413566737)
 and [app database collection test](https://github.com/patricksilva-yu/nba-harness/actions/runs/40413817408).
+
+## Browsing collected games
+
+NBA home cards distinguish saved final scores from available box scores. When
+there is no shared breakdown, selecting a game opens its saved overview: team
+comparison, scoring leaders and the scoring timeline when play-by-play exists.
+`GET /api/games/{game_id}/overview` requires sign-in and only reads the datastore;
+it never starts ingestion or an AI run. Results-only games show the final score
+and an explanation that detailed stats have not been collected yet. The same
+view is available for NBA games selected from the recent-finals sidebar.
+
+Questions remain an explicit action through the suggested questions or composer.
+Those use the existing verified analysis harness and can incur model costs.
+Existing shared breakdowns still open directly. No migration is required.

@@ -6,6 +6,7 @@ import { useAuth } from './auth'
 import { AppSidebar, BrandMark } from './AppSidebar'
 import { Composer } from './Composer'
 import { EmptyState } from './EmptyState'
+import { GameOverview } from './GameOverview'
 import { formatGameDate, GameHeader } from './GameHeader'
 import { Home } from './Home'
 import { Inspector } from './Inspector'
@@ -198,6 +199,7 @@ export function App() {
   async function openBreakdown(game) {
     if (busy) return
     let fresh = { ...NEW_CONVERSATION, gameId: game.game_id, gameRow: game }
+    if (game.breakdown_available === false) return startConversation(fresh)
     startConversation({ ...fresh, status: 'loading' })
     try {
       setConversation({ ...fresh, turns: [turnFromRun(await api.breakdown(game.game_id))] })
@@ -274,7 +276,9 @@ export function App() {
               <p className="pt-[6vh] text-sm text-red-700 dark:text-red-400">Couldn't open that conversation. {conversation.error}</p>
             )}
             {conversation.status === 'ready' && conversation.turns.length === 0 && (
-              <EmptyState
+              conversation.gameId ? (
+                <GameOverview key={conversation.gameId} gameId={conversation.gameId} flow={flow} onAsk={(q) => ask(q)} />
+              ) : <EmptyState
                 wrongGameQuestion={conversation.wrongGameQuestion}
                 game={game}
                 recentGames={games.items}
