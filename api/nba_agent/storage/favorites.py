@@ -48,7 +48,11 @@ class FavoriteTeamsRepository:
         try:
             rows = connection.execute(
                 """SELECT team_abbr, game_id, game_date, season_type, away_team_abbr, away_score,
-                          home_team_abbr, home_score
+                          home_team_abbr, home_score,
+                          (SELECT COUNT(*) FROM box_scores_team b WHERE b.game_id = ranked.game_id) AS team_rows,
+                          EXISTS (SELECT 1 FROM box_scores_player b WHERE b.game_id = ranked.game_id) AS has_players,
+                          EXISTS (SELECT 1 FROM game_pipeline p WHERE p.game_id = ranked.game_id
+                                  AND p.status = 'analyzed' AND p.breakdown_run_id IS NOT NULL) AS has_breakdown
                    FROM (SELECT f.team_abbr, g.*, ROW_NUMBER() OVER (
                              PARTITION BY f.team_abbr ORDER BY g.game_date DESC, g.game_id DESC) AS n
                          FROM favorite_teams AS f
@@ -63,6 +67,8 @@ class FavoriteTeamsRepository:
                 "game_date": row[2].isoformat() if hasattr(row[2], "isoformat") else row[2],
                 "season_type": row[3], "away_team_abbr": row[4], "away_score": row[5],
                 "home_team_abbr": row[6], "home_score": row[7],
+                "stats_available": row[8] == 2 and bool(row[9]),
+                "breakdown_available": bool(row[10]),
             } for row in rows]
         finally:
             connection.close()

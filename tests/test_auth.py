@@ -213,3 +213,42 @@ def test_only_recorded_breakdowns_are_open_to_everyone(client):
                                         mcp_client=Client(server()), model=ScriptedModel([*preparation(), answer(), review()])))
     follow = {"question": "Who scored most?", "parent_run_id": ownerless["analysis_run_id"]}
     assert client.post("/api/ask/stream", json=follow, headers=bearer(BOB)).status_code == 404
+
+
+def test_saved_nba_overview_is_authenticated_read_only_and_handles_results_only(client, monkeypatch):
+    def no_model(**_):
+        pytest.fail("Browsing saved stats must never initialize an AI model")
+    monkeypatch.setattr("api.routes.ResponsesModel", no_model)
+    assert client.get("/api/games/saved/overview").status_code == 401
+    assert client.get("/api/games/missing/overview", headers=bearer(ALICE)).status_code == 404
+    from api import routes
+    c = routes.get_storage().open(read_only=False)
+    try:
+        c.execute("""INSERT INTO games (game_id, game_date, season_type, away_team_abbr,
+                     home_team_abbr, away_score, home_score, source)
+                     VALUES ('saved', '2026-10-25', 'Regular Season', 'TOR', 'MIN', 94, 117, 'nba_s3:results')""")
+    finally:
+        c.close()
+    saved = client.get("/api/games/saved/overview", headers=bearer(ALICE)).json()
+    assert saved['game']['away_score'] == 94 and saved['stats_available'] is False
+    assert saved['players'] == [] and saved['stats_updated_at'] is None
+    c = routes.get_storage().open(read_only=False)
+    try:
+        for side, abbr, pts in [('away', 'TOR', 94), ('home', 'MIN', 117)]:
+            c.execute("INSERT INTO box_scores_team (game_id, team_side, team_abbr, pts) VALUES ('saved', ?, ?, ?)", [side, abbr, pts])
+            c.execute("INSERT INTO box_scores_player (game_id, player_id, player_name, team_abbr, minutes, pts) VALUES ('saved', ?, ?, ?, 30, ?)", [abbr, abbr + ' Player', abbr, pts])
+        c.execute("INSERT INTO box_scores_player (game_id, player_id, player_name, team_abbr, minutes, pts) VALUES ('saved', 'dnp', 'Did Not Play', 'TOR', 0, 0)")
+    finally:
+        c.close()
+    result = client.get("/api/games/saved/overview", headers=bearer(BOB)).json()
+    assert result['stats_available'] is True
+    assert [p['team_abbr'] for p in result['players']] == ['MIN', 'TOR']
+    assert result['game']['game_date'] == '2026-10-25'
+    assert client.post('/api/me/favorite-teams', headers=bearer(ALICE), json={'team_abbr': 'TOR'}).status_code == 201
+    card = client.get('/api/me/favorite-games', headers=bearer(ALICE)).json()['games'][0]
+    assert card['stats_available'] is True and card['breakdown_available'] is False
+    c = routes.get_storage().open()
+    try:
+        assert c.execute("SELECT COUNT(*) FROM harness_runs").fetchone()[0] == 0
+    finally:
+        c.close()

@@ -95,8 +95,9 @@ function LatestGame({ abbr, game, onSelect }) {
           {view.venue} {team(view.opponent).name}
         </span>
       </div>
+      <p className="mt-2 text-xs/5 text-zinc-500 dark:text-zinc-400">{game.stats_available ? 'Stats available' : 'Final score saved'}</p>
       <div className="mt-3 flex items-center gap-1 text-sm/6 font-medium text-zinc-950 dark:text-white">
-        Read the breakdown
+        {game.breakdown_available ? 'Read the breakdown' : game.stats_available ? 'View stats & ask' : 'Open game'}
         <ChevronRightIcon className="size-4 text-zinc-400 transition group-hover:translate-x-0.5" />
       </div>
     </button>
@@ -208,7 +209,10 @@ export function Home({ onSelectGame }) {
       ) : (
         <>
           <div className="flex items-center justify-between gap-4">
-            <Heading>Your teams</Heading>
+            <div>
+              <Heading>Your teams</Heading>
+              <Text className="mt-1">Saved finals and stats. New games are collected each morning.</Text>
+            </div>
             <Button outline onClick={() => setPicker('edit')}>
               Edit teams
             </Button>
