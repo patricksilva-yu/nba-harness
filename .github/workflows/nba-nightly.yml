@@ -2,7 +2,10 @@ name: NBA overnight collection
 
 on:
   schedule:
-    - cron: "0 11 * * *" # 06:00 EST / 07:00 EDT, after West Coast games
+    - cron: "30 22 * * *"
+      timezone: "America/Toronto"
+    - cron: "0 1 * * *"
+      timezone: "America/Toronto"
   workflow_dispatch:
     inputs:
       smoke_only:
