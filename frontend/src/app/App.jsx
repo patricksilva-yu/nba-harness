@@ -56,8 +56,8 @@ function gameLabel(game) {
 function describeGame(gameId, flow, row, resolution) {
   if (!gameId) return null
   let stage = (seasonType, number) => (seasonType === 'Playoffs' ? (number ? `Playoffs · Game ${number}` : 'Playoffs') : null)
-  let date = row?.game_date ?? resolution?.game_date
-  let stageText = stage(row?.season_type ?? resolution?.season_type, resolution?.series_game_number)
+  let date = row?.game_date ?? resolution?.game_date ?? (flow?.game_id === gameId ? flow.game_date : null)
+  let stageText = stage(row?.season_type ?? resolution?.season_type ?? (flow?.game_id === gameId ? flow.season_type : null), resolution?.series_game_number)
   if (flow?.game_id === gameId && flow.status !== 'not_found') {
     return { away: flow.away_team_abbr, home: flow.home_team_abbr, awayScore: flow.away_score, homeScore: flow.home_score, date, stage: stageText }
   }

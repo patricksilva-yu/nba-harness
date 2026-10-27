@@ -27,8 +27,30 @@ const ADVANCED_ROWS = [
 function describeByType(packet) {
   let m = packet.metrics ?? {}
   switch (packet.type) {
-    case 'game_snapshot':
-      return { title: 'Final score', facts: [['Away', m.away_score], ['Home', m.home_score]] }
+    case 'game_snapshot': {
+      let box = (m.team_box ?? []).filter((row) => row?.team_abbr)
+      let shooting = (row, made, attempted) => row[made] == null || row[attempted] == null
+        ? '–' : `${num(row[made], 0)}/${num(row[attempted], 0)}`
+      let rows = [
+        ['Points', (row) => num(row.pts, 0)],
+        ['Field goals', (row) => shooting(row, 'fgm', 'fga')],
+        ['FG%', (row) => pct(row.fg_pct)],
+        ['Three-pointers', (row) => shooting(row, 'fg3m', 'fg3a')],
+        ['3P%', (row) => pct(row.fg3_pct)],
+        ['Free throws', (row) => shooting(row, 'ftm', 'fta')],
+        ['Rebounds', (row) => num(row.reb, 0)],
+        ['Offensive rebounds', (row) => num(row.oreb, 0)],
+        ['Defensive rebounds', (row) => num(row.dreb, 0)],
+        ['Assists', (row) => num(row.ast, 0)],
+        ['Turnovers', (row) => num(row.tov, 0)],
+      ]
+      return {
+        title: box.length ? 'Game box score' : 'Final score',
+        facts: [['Away', m.away_score], ['Home', m.home_score]],
+        ...(box.length ? { table: { teams: box.map((row) => row.team_abbr),
+          rows: rows.map(([label, format]) => [label, ...box.map(format)]) } } : {}),
+      }
+    }
     case 'run_candidate': {
       let w = packet.window ?? m
       let delta = m.score_delta_for_beneficiary

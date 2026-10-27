@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 3000 --strictPort",
     "build": "vite build",
+    "test:evidence": "node --test src/app/evidence.test.js",
     "preview": "vite preview --host 127.0.0.1 --port 3000 --strictPort"
   },
   "dependencies": {

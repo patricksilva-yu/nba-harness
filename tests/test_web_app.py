@@ -39,8 +39,8 @@ def test_game_flow_tracks_margin_through_overtime(tmp_path, monkeypatch):
     initialize_database(path)
     con = get_storage(path).open(read_only=False)
     try:
-        con.execute("INSERT INTO games (game_id, home_team_abbr, away_team_abbr, home_score, away_score, source) "
-                    "VALUES ('g1', 'HOM', 'AWY', 105, 103, 'fixture')")
+        con.execute("INSERT INTO games (game_id, home_team_abbr, away_team_abbr, home_score, away_score, source, game_date, season_type) "
+                    "VALUES ('g1', 'HOM', 'AWY', 105, 103, 'fixture', '2026-10-25', 'Regular Season')")
         rows = [(1, 1, "11:30", 2, 0), (2, 1, "11:30", 2, 0), (3, 4, "0:04", 98, 98),
                 (4, 5, "2:30", 101, 103), (5, 5, "0:00", 103, 105), (6, 2, "5:00", None, None)]
         for eventnum, period, clock, away, home in rows:
@@ -53,6 +53,8 @@ def test_game_flow_tracks_margin_through_overtime(tmp_path, monkeypatch):
     assert game_elapsed_minutes(5, "2:30") == 50.5
     flow = get_game_flow("g1", path)
     assert flow["status"] == "ok"
+    assert flow["game_date"] == "2026-10-25"
+    assert flow["season_type"] == "Regular Season"
     assert flow["periods"] == 5 and flow["length_minutes"] == 53
     # Unchanged scores and events without a score are not new points.
     assert [(p["minute"], p["margin"]) for p in flow["points"]] == [(0, 0), (0.5, 2), (47.933, 0), (50.5, -2), (53, -2)]
