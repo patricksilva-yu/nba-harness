@@ -211,7 +211,7 @@ export function Home({ onSelectGame }) {
           <div className="flex items-center justify-between gap-4">
             <div>
               <Heading>Your teams</Heading>
-              <Text className="mt-1">Saved finals and stats. New games are collected each morning.</Text>
+              <Text className="mt-1">Saved finals and stats. Finals are collected at 10:30 p.m. and 1 a.m. Eastern.</Text>
             </div>
             <Button outline onClick={() => setPicker('edit')}>
               Edit teams

@@ -120,8 +120,11 @@ to clearly qualified substitution context. The API/MCP process should also set
 `NBA_DATA_SOURCE=s3` so uncached questions do not contact blocked stats endpoints.
 No PostgreSQL schema changes are required for this loader.
 
-`.github/workflows/nba-nightly.yml` runs at 11:00 UTC (6 am Eastern in winter,
-7 am in summer), once it is on the default branch. Each run discovers finals
+`.github/workflows/nba-nightly.yml` runs at 10:30 pm and 1:00 am Eastern
+(`America/Toronto`), once it is on the default branch. The timezone-aware
+schedules follow daylight saving time. The first pass collects early finals;
+the 1 am pass catches later finals and retries incomplete data. Games that end
+after the second pass are picked up by the next run's seven-day catch-up. Each run discovers finals
 from the last seven Eastern dates, records all final results, and loads details
 only for teams fans follow. Previously queued games remain eligible for retry.
 The workflow serializes runs and caps each pass at 100 games. Failed discovery
