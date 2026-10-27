@@ -1076,7 +1076,7 @@ def get_game_flow(game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
     con = get_storage(db_path).open()
     try:
         game = con.execute(
-            "SELECT home_team_abbr, away_team_abbr, home_score, away_score FROM games WHERE game_id = ?",
+            "SELECT home_team_abbr, away_team_abbr, home_score, away_score, game_date, season_type FROM games WHERE game_id = ?",
             [game_id],
         ).fetchone()
         if not game:
@@ -1084,7 +1084,7 @@ def get_game_flow(game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
         events = scoring_events(con, game_id)
     finally:
         con.close()
-    home_abbr, away_abbr, home_score, away_score = game
+    home_abbr, away_abbr, home_score, away_score, game_date, season_type = game
     points = [{"period": 1, "clock": "12:00", "minute": 0.0, "away_score": 0, "home_score": 0, "margin": 0}]
     for event in events:
         minute = game_elapsed_minutes(int(event["period"]), event["pctimestring"])
@@ -1100,6 +1100,7 @@ def get_game_flow(game_id: str, db_path: Path = DEFAULT_DB) -> dict[str, Any]:
         "game_id": game_id, "status": "ok" if len(points) > 1 else "no_play_by_play",
         "away_team_abbr": away_abbr, "home_team_abbr": home_abbr,
         "away_score": away_score, "home_score": home_score,
+        "game_date": str(game_date)[:10] if game_date else None, "season_type": season_type,
         "periods": periods, "length_minutes": 48 + max(0, periods - 4) * 5,
         "margin_perspective": "away", "points": points,
     }

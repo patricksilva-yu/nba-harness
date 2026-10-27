@@ -188,3 +188,7 @@ view is available for NBA games selected from the recent-finals sidebar.
 Questions remain an explicit action through the suggested questions or composer.
 Those use the existing verified analysis harness and can incur model costs.
 Existing shared breakdowns still open directly. No migration is required.
+
+See [real NBA question and follow-up verification](nba-flow-verification.md) for
+the live-model browser checks, discovered fixes and remaining human acceptance
+coverage.
